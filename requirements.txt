@@ -1,0 +1,20 @@
+# Core Data Libraries
+pandas
+numpy
+
+# API & Web Scraping
+requests
+
+# Sports Data
+nba_api
+
+# Text Matching (for matching "L. James" to "LeBron James")
+fuzzywuzzy
+python-Levenshtein
+
+# Machine Learning (for later)
+scikit-learn
+
+# Jupyter Notebook Support (Fixes your VS Code issues)
+ipykernel
+jupyter
