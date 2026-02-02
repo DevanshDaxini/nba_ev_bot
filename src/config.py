@@ -1,19 +1,51 @@
 # src/config.py
+import os
+from dotenv import load_dotenv
+
+# Load secrets from the .env file
+load_dotenv()
 
 # 1. API Configuration
-# GET THIS KEY HERE: https://the-odds-api.com/ (Click "Get API Key", it's free)
-# It will be emailed to you. Paste it inside the quotes below.
-# Will get API after the structure for this code is setup
-ODDS_API_KEY = 'YOUR_ACTUAL_API_KEY_HERE'
+# We now get the key safely from the environment variable
+ODDS_API_KEY = os.getenv('ODDS_API_KEY')
+
+# If the key is missing, warn the user (helpful for debugging)
+if not ODDS_API_KEY:
+    raise ValueError("API Key not found! Make sure you have a .env file with ODDS_API_KEY inside.")
+
+# ... (Rest of your file stays the same: SPORT_MAP, MARKETS, etc.)
 
 # 2. Sport Constants
-SPORT = 'basketball_nba'
+SPORT_MAP = {
+    'NBA': 'basketball_nba',
+    'NHL': 'icehockey_nhl',
+    'NFL': 'americanfootball_nfl',
+}
 REGIONS = 'us'
 
-# CHANGED: We need player props, not game lines
-# Note: On the free plan, you might be limited to specific props. 
-# We will start with Points, Rebounds, and Assists.
-MARKETS = 'player_points,player_rebounds,player_assists' 
+# Combinging the player props for NBA, NHL, and NFL
+MARKETS = (
+    # NBA (Basketball)
+    'player_points,player_points_q1,player_rebounds,player_rebounds_q1,'
+    'player_assists,player_assists_q1,player_threes,player_blocks,'
+    'player_steals,player_blocks_steals,player_turnovers,'
+    'player_points_rebounds_assists,player_points_rebounds,'
+    'player_points_assists,player_rebounds_assists,'
+    'player_field_goals,player_frees_made,player_frees_attempts,'
+
+    # NHL (Hockey)
+    'player_power_play_points,player_blocked_shots,'
+    'player_goals,player_total_saves,player_shots_on_goal,'
+    
+    # NFL (Football)
+    'player_pass_attempts,player_pass_completions,player_pass_interceptions,'
+    'player_pass_longest_completion,player_pass_rush_yds,player_pass_tds,'
+    'player_pass_yds,player_receptions,player_reception_longest,'
+    'player_reception_tds,player_reception_yds,player_rush_attempts,'
+    'player_rush_longest,player_rush_reception_yds,player_rush_tds,'
+    'player_rush_yds,player_sacks,player_solo_tackles,player_tackles_assists,'
+    'player_pass_rush_reception_tds,player_pass_rush_reception_yds'
+)
 
 ODDS_FORMAT = 'american'
 DATE_FORMAT = 'iso'
