@@ -16,14 +16,27 @@ if not ODDS_API_KEY:
 # ... (Rest of your file stays the same: SPORT_MAP, MARKETS, etc.)
 
 # 2. Sport Constants
+
+SPORT_MAP = {
+    'NBA': 'basketball_nba',
+}
+
+# Looking for all of these markets will make lose API keys fast
+"""
 SPORT_MAP = {
     'NBA': 'basketball_nba',
     'NHL': 'icehockey_nhl',
     'NFL': 'americanfootball_nfl',
 }
+"""
+
 REGIONS = 'us'
 
-# Combinging the player props for NBA, NHL, and NFL
+# Updated and conservative market
+MARKETS = 'player_points,player_rebounds,player_assists'
+
+# Looking for all of these markets will make lose API keys fast
+"""
 MARKETS = (
     # NBA (Basketball)
     'player_points,player_points_q1,player_rebounds,player_rebounds_q1,'
@@ -46,6 +59,8 @@ MARKETS = (
     'player_rush_yds,player_sacks,player_solo_tackles,player_tackles_assists,'
     'player_pass_rush_reception_tds,player_pass_rush_reception_yds'
 )
+"""
+
 
 ODDS_FORMAT = 'american'
 DATE_FORMAT = 'iso'
