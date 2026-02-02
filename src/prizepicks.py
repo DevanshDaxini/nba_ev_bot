@@ -5,17 +5,16 @@ import json
 class PrizePicksClient:
     def __init__(self):
         self.url = "https://api.prizepicks.com/projections"
-        # We must look like a real browser, or they will block us
+        # We need a stronger disguise to bypass the 403 error
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"+
-            " AppleWebKit/537.36 (KHTML, like Gecko)"+
-            " Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://app.prizepicks.com/",
+            "Origin": "https://app.prizepicks.com"
         }
 
     def fetch_board(self):
-        """
-        Fetches the current board and returns a clean DataFrame.
-        """
         try:
             response = requests.get(self.url, headers=self.headers)
             response.raise_for_status()
@@ -24,53 +23,47 @@ class PrizePicksClient:
             print(f"Error connecting to PrizePicks: {e}")
             return pd.DataFrame()
 
-        # --- YOUR HOMEWORK STARTS HERE ---
-        
-        # 1. Understand the Data Structure
-        # data' = The Lines (e.g., "Over 24.5 Points"). 
-        # But it doesn't have the player's name!
-        # 'included' = The Metadata (Player Names, Team info). 
-        # You have to match them using "relationships" -> "new_player" -> "id"
-        
         projections_list = data['data']
         included_list = data['included']
         
         # STEP 1: Create a "Lookup Dictionary" for Player Names
-        # Goal: { '12345': 'LeBron James', '67890': 'Steph Curry' }
         player_map = {}
         
         for item in included_list:
-            # TODO: Write an IF statement to check if item['type'] 
-            # is equal to 'new_player'
-            # If yes, extract the 'id' and 'attributes' -> 
-            # 'name' and save to player_map
-            pass # <--- Delete this 'pass' and write your code
+            # FIX 1: Added underscore ('new_player')
+            if item['type'] == 'new_player':
+                p_id = str(item['id'])
+                player_name = item['attributes']['name']
+                # FIX 2: Changed 'player_id' to 'p_id' to match the variable above
+                player_map[p_id] = player_name
 
+        print(f"DEBUG: I learned {len(player_map)} player names.")
+        
         # STEP 2: Parse the Projections
         clean_lines = []
         
         for proj in projections_list:
-            # Only look for 'is_promo': false 
-            # (unless you want Taco Tuesday discounts)
             if proj['attributes'].get('is_promo') is True:
                 continue
-
-            # TODO: Extract the Player ID from: proj['relationships']
-            # ['new_player']['data']['id']
-            # TODO: Use your player_map to find the actual Name.
             
-            # TODO: Extract 'line_score' and 'stat_type' from proj['attributes']
+            if proj['attributes'].get('odds_type') != 'standard':
+                continue
             
-            # Append to our list
-            # clean_lines.append({
-            #    'player': player_name,
-            #    'team': ..., # (Optional, if you want to find team info too)
-            #    'stat': stat_type,
-            #    'line': line_score
-            # })
-            pass 
+            p_id = str(proj['relationships']['new_player']['data']['id'])
+            
+            current_name = player_map.get(p_id)
 
-        # Return as a DataFrame
+            p_line = proj['attributes']['line_score']
+            p_stat = proj['attributes']['stat_type']
+
+            my_map = {}
+            my_map['ID'] = p_id
+            my_map['Player Name'] = current_name
+            my_map['Player Stat'] = p_stat
+            my_map['Line'] = p_line
+
+            clean_lines.append(my_map)
+
         return pd.DataFrame(clean_lines)
 
 # --- TEST BLOCK ---
