@@ -135,7 +135,7 @@ if __name__ == "__main__":
         
         # SAVE TO FILE
         filename = "fanduel_test_data.csv"
-        df.to_csv(filename, index=False)
+        df.to_csv(f'csvFiles/{filename}', index=False)
         print(f"Saved all data to {filename}. Go open it!")
         
         # Still show the preview
