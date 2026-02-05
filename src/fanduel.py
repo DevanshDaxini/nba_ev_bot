@@ -2,27 +2,38 @@ import requests
 import pandas as pd
 import time
 from src.config import ODDS_API_KEY, MARKETS, REGIONS, ODDS_FORMAT, SPORT_MAP
+from src.utils import SimpleCache
 
 class FanDuelClient:
     def __init__(self):
         self.api_key = ODDS_API_KEY
         self.base_url = "https://api.the-odds-api.com/v4/sports"
+        self.cache = SimpleCache(duration=300)
 
     # Change the variable limit_games when you want to get data
     # from all available nba games
-    def get_all_odds(self, limit_games=3):
+    def get_all_odds(self, limit_games=None):
         """
-        1. Loops through sports in SPORT_MAP.
-        2. Fetches Game IDs.
-        3. Loops through the first 'limit_games' to get player props.
+        1. Checks Cache.
+        2. If empty, Loops through sports -> Fetches IDs -> Fetches Props.
+        3. Saves to Cache.
         """
+        # Check Cache First
+        # We create a unique name for this request. 
+        # If you ask for 5 games, it saves under "fd_odds_5".
+        cache_key = f"fd_odds_{limit_games}"
+        
+        cached_data = self.cache.get(cache_key)
+        if cached_data is not None:
+            print(f"[Cache] Using saved FanDuel data ({len(cached_data)} rows). API Quota saved!")
+            return cached_data
+
         all_data = []
 
         for league_name, sport_key in SPORT_MAP.items():
             print(f"\n--- Scanning {league_name} ({sport_key}) ---")
             
             # STEP 1: Get the Game IDs (Cheap Call)
-            # We use 'h2h' just to see the schedule
             games_url = f"{self.base_url}/{sport_key}/odds"
             params = {
                 'apiKey': self.api_key,
@@ -43,7 +54,6 @@ class FanDuelClient:
             print(f"Found {len(games)} games active.")
             
             # STEP 2: Loop through specific games to get Props (Expensive Call)
-            # We limit to the first few games to save your quota
             games_to_check = games[:limit_games]
 
             for game in games_to_check:
@@ -58,8 +68,16 @@ class FanDuelClient:
                 
                 # Sleep to be nice to the API
                 time.sleep(0.5)
+        
+        # Convert to DataFrame
+        final_df = pd.DataFrame(all_data)
 
-        return pd.DataFrame(all_data)
+        # Save to Cache 
+        if not final_df.empty:
+            self.cache.set(cache_key, final_df)
+            print(f"[Cache] Saved {len(final_df)} rows for next time.")
+
+        return final_df
 
     def _fetch_props_for_game(self, sport_key, game_id):
         """
