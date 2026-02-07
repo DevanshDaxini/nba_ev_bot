@@ -23,10 +23,10 @@ class PrizePicksClient:
             print(f"Error connecting to PrizePicks: {e}")
             return pd.DataFrame()
 
-        projections_list = data['data']
-        included_list = data['included']
+        projections_list = data.get('data', [])
+        included_list = data.get('included', [])
         
-        # Finding the player and league name
+        # 1. Build Lookup Maps (Player ID -> Name, League ID -> Name)
         player_map = {}
         league_map = {}
         
@@ -41,34 +41,47 @@ class PrizePicksClient:
                 league_name = item['attributes']['name']
                 league_map[l_id] = league_name
 
-
-        print(f"DEBUG: I learned {len(player_map)} player names.")
+        print(f"DEBUG: I learned {len(player_map)}" 
+              f" player names and {len(league_map)} leagues.")
         
-        # Parse through projections to get back ID, Stats, and Lines.
+        # 2. Parse Projections
         clean_lines = []
         
         for proj in projections_list:
-            if proj['attributes'].get('is_promo') is True:
+            attributes = proj['attributes']
+            
+            # Skip promos (discounted lines) and non-standard odds
+            if attributes.get('is_promo') is True:
+                continue
+            if attributes.get('odds_type') != 'standard':
                 continue
             
-            if proj['attributes'].get('odds_type') != 'standard':
-                continue
-            
+            # Get IDs
             p_id = str(proj['relationships']['new_player']['data']['id'])
-            current_name = player_map.get(p_id)
-            
             l_id = str(proj['relationships']['league']['data']['id'])
+            
+            # Get Names from Maps
+            current_name = player_map.get(p_id)
             current_league = league_map.get(l_id)
 
-            p_line = proj['attributes']['line_score']
-            p_stat = proj['attributes']['stat_type']
+            # --- THE FIX IS HERE ---
+            # If the league is NOT 'NBA', skip this line entirely.
+            # This drops CBB, NHL, NFL, etc.
+            if current_league != 'NBA':
+                continue
+            # -----------------------
 
-            my_map = {}
-            my_map['ID'] = p_id
-            my_map['Player'] = current_name
-            my_map['League'] = current_league
-            my_map['Stat'] = p_stat
-            my_map['Line'] = p_line
+            p_line = attributes['line_score']
+            p_stat = attributes['stat_type']
+
+            # Build the row
+            my_map = {
+                'ID': p_id,
+                'Player': current_name,
+                'League': current_league,
+                'Stat': p_stat,
+                'Line': p_line
+            }
 
             clean_lines.append(my_map)
 
