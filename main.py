@@ -24,24 +24,34 @@ def main():
         sorted_bets = all_bets.sort_values(by='Implied_Win_%', ascending=False)
         
         print("\nTOP 15 HIGHEST PROBABILITY PLAYS:")
-        print(sorted_bets[['Player', 'Stat', 'Side', 'Line', 'Implied_Win_%']].head(15).to_string(index=False))
+        print(sorted_bets[['Date', 'Player', 'Stat', 'Side', 'Line', 'Implied_Win_%']].head(15).to_string(index=False))
         
-        # --- FOLDER LOGIC ---
+        # --- NEW SAVING LOGIC ---
         output_folder = "program_runs"
-        
-        # Create the folder if it doesn't exist
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
-            print(f"\nCreated new folder: {output_folder}/")
 
-        # Save file inside the folder
-        date_str = datetime.now().strftime("%Y-%m-%d")
-        filename = f"{output_folder}/scan_{date_str}.csv"
+        # 1. Group by the 'Date' column we just added
+        # This splits the big dataframe into mini-dataframes based on game day
+        unique_dates = sorted_bets['Date'].unique()
         
-        sorted_bets.to_csv(filename, index=False)
-        print(f"\nSaved {len(sorted_bets)} total lines to '{filename}'")
+        print(f"\n--- Saving Data for {len(unique_dates)}"
+              f" Different Game Days ---")
+
+        for game_date in unique_dates:
+            # Get only the rows for this specific date
+            day_data = sorted_bets[sorted_bets['Date'] == game_date]
+            
+            # Save as scan_YYYY-MM-DD.csv
+            filename = f"{output_folder}/scan_{game_date}.csv"
+            
+            # If file exists, we might want to overwrite or append. 
+            # For now, let's overwrite to keep it fresh.
+            day_data.to_csv(filename, index=False)
+            print(f" -> Saved {len(day_data)} lines to {filename}")
+
     else:
-        print("No matches found! (Check if player names match exactly)")
+        print("No matches found!")
 
 if __name__ == "__main__":
     main()
