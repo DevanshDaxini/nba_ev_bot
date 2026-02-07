@@ -39,8 +39,8 @@ MARKETS = 'player_points,player_rebounds,player_assists'
 """
 MARKETS = (
     # NBA (Basketball)
-    'player_points,player_points_q1,player_rebounds,player_rebounds_q1,'
-    'player_assists,player_assists_q1,player_threes,player_blocks,'
+    'player_points,player_rebounds,'
+    'player_assists,player_threes,player_blocks,'
     'player_steals,player_blocks_steals,player_turnovers,'
     'player_points_rebounds_assists,player_points_rebounds,'
     'player_points_assists,player_rebounds_assists,'
@@ -77,4 +77,16 @@ SLIP_CONFIG = {
     '5_man_flex':  {'hurdle': 54.25, 'min_odds': -119}, # Best Value usually
     '6_man_power': {'hurdle': 65.00, 'min_odds': -186},
     '6_man_flex':  {'hurdle': 54.21, 'min_odds': -118}, # Best Value usually
+}
+
+
+STAT_MAP = {
+    'player_points': 'Points',
+    'player_rebounds': 'Rebounds',
+    'player_assists': 'Assists',
+    'player_threes': '3-PT Made',
+    'player_points_rebounds_assists': 'Pts+Rebs+Asts',
+    'player_blocks': 'Blocks',
+    'player_steals': 'Steals',
+    'player_turnovers': 'Turnovers'
 }
