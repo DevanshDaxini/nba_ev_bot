@@ -10,8 +10,7 @@ class PropsAnalyzer:
     def calculate_edges(self):
         """
         Iterates through PrizePicks lines, finds the matching FanDuel line,
-        calculates the 'True Probability', and 
-        checks if it beats the Hurdle Rate.
+        calculates the 'True Probability', and returns ALL lines with their Date.
         """
         opportunities = []
         
@@ -22,6 +21,11 @@ class PropsAnalyzer:
             pp_name = pp_row['Player']
             pp_stat = pp_row['Stat']
             pp_line = pp_row['Line']
+            
+            # --- FIX 1: Grab the Date ---
+            # We get it from the row. If it's missing, default to "Unknown"
+            pp_date = pp_row.get('Date', 'Unknown')
+            # ----------------------------
 
             fd_name, fd_rows = self._find_match_in_fanduel(pp_name)
 
@@ -39,27 +43,19 @@ class PropsAnalyzer:
             line_diff = pp_line - fd_line
 
             # 1. Define Valid Sides
-            # If lines match, both sides are valid to check
             valid_sides = ['Over', 'Under']
 
             # 2. Handle Discrepancies
             if line_diff != 0:
-                # If the difference is huge 
-                # (e.g. 5 points), it's probably bad data. Skip.
                 if abs(line_diff) > 1.5:
                     continue
 
-                # PP (10.5) < FD (11.5) -> The OVER 
-                # is easier on PP. The UNDER is harder.
                 if line_diff < 0:
                     valid_sides = ['Over'] # We only care about the Over
-                
-                # PP (11.5) > FD (10.5) -> The UNDER 
-                # is easier on PP. The OVER is harder.
                 elif line_diff > 0:
                     valid_sides = ['Under']
             
-            # getting the true probablity from fanduel.
+            # getting the true probability from fanduel.
             fd_over_odds = matching_stat.iloc[0]['over_price']
             fd_under_odds = matching_stat.iloc[0]['under_price']
 
@@ -67,11 +63,11 @@ class PropsAnalyzer:
                                     fd_over_odds, 
                                     fd_under_odds)
             
-            # looping through to see if that are any props that match the
-            # params setup to consider it as a good option for a certain bet
+            # --- FIX 2: Add Date to the Output ---
             
             if 'Over' in valid_sides:
                 opportunities.append({
+                    "Date": pp_date,  # <--- Added Here
                     "Player": pp_name,
                     "League": "NBA",
                     "Stat": pp_stat,
@@ -83,6 +79,7 @@ class PropsAnalyzer:
 
             if 'Under' in valid_sides:
                 opportunities.append({
+                    "Date": pp_date,  # <--- Added Here
                     "Player": pp_name,
                     "League": "NBA",
                     "Stat": pp_stat,
@@ -137,30 +134,26 @@ class PropsAnalyzer:
         true_under_prob = prob_under / Market_Total
 
         return true_over_prob, true_under_prob
-    
-# Testing Below
 
+# Testing Below
 if __name__ == "__main__":
     print("--- TESTING ANALYZER LOGIC ---")
     
-    # 1. Create Fake PrizePicks Data
-    # We need columns: 'Player', 'Stat', 'Line'
+    # 1. Create Fake PrizePicks Data with Dates
     mock_pp_data = {
         'Player': ['LeBron James', 'Steph Curry'], 
         'Stat': ['Points', 'Points'],
-        'Line': [25.5, 29.5] 
+        'Line': [25.5, 29.5],
+        'Date': ['2026-02-10', '2026-02-11'] # Mock dates
     }
     pp_df = pd.DataFrame(mock_pp_data)
 
     # 2. Create Fake FanDuel Data
-    # We need columns: 'Player', 'Stat', 'Line', 'over_price', 'under_price'
-    # Scenario A: LeBron is a HUGE favorite to go OVER (Should be a Win)
-    # Scenario B: Steph is a normal bet (Should be ignored)
     mock_fd_data = {
         'Player': ['LeBron James', 'Stephen Curry'], 
         'Stat': ['Points', 'Points'],
         'Line': [25.5, 29.5],
-        'over_price': [-200, -110],  # -200 is massive odds (66%)
+        'over_price': [-200, -110],  
         'under_price': [150, -110]
     }
     fd_df = pd.DataFrame(mock_fd_data)

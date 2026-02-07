@@ -26,64 +26,53 @@ class PrizePicksClient:
         projections_list = data.get('data', [])
         included_list = data.get('included', [])
         
-        # 1. Build Lookup Maps (Player ID -> Name, League ID -> Name)
+        # 1. Build Lookup Maps
         player_map = {}
         league_map = {}
         
         for item in included_list:
             if item['type'] == 'new_player':
                 p_id = str(item['id'])
-                player_name = item['attributes']['name']
-                player_map[p_id] = player_name
-
+                player_map[p_id] = item['attributes']['name']
             if item['type'] == 'league':
                 l_id = str(item['id'])
-                league_name = item['attributes']['name']
-                league_map[l_id] = league_name
+                league_map[l_id] = item['attributes']['name']
 
-        print(f"DEBUG: I learned {len(player_map)}" 
-              f" player names and {len(league_map)} leagues.")
+        print(f"DEBUG: Learned {len(player_map)} players.")
         
         # 2. Parse Projections
         clean_lines = []
         
         for proj in projections_list:
-            attributes = proj['attributes']
+            attrs = proj['attributes']
             
-            # Skip promos (discounted lines) and non-standard odds
-            if attributes.get('is_promo') is True:
-                continue
-            if attributes.get('odds_type') != 'standard':
-                continue
-            
-            # Get IDs
+            # Filter bad lines
+            if attrs.get('is_promo') is True: continue
+            if attrs.get('odds_type') != 'standard': continue
+
+            # IDs
             p_id = str(proj['relationships']['new_player']['data']['id'])
             l_id = str(proj['relationships']['league']['data']['id'])
             
-            # Get Names from Maps
-            current_name = player_map.get(p_id)
             current_league = league_map.get(l_id)
+            if current_league != 'NBA': continue # Strictly NBA
 
-            # --- THE FIX IS HERE ---
-            # If the league is NOT 'NBA', skip this line entirely.
-            # This drops CBB, NHL, NFL, etc.
-            if current_league != 'NBA':
-                continue
-            # -----------------------
+            # --- NEW: Get Game Date ---
+            # Format is usually: "2026-02-07T19:00:00-05:00"
+            raw_start = attrs.get('start_time')
+            game_date = "Unknown"
+            if raw_start:
+                # Take just the first 10 chars (YYYY-MM-DD)
+                game_date = raw_start[:10]
 
-            p_line = attributes['line_score']
-            p_stat = attributes['stat_type']
-
-            # Build the row
-            my_map = {
+            clean_lines.append({
                 'ID': p_id,
-                'Player': current_name,
+                'Player': player_map.get(p_id),
                 'League': current_league,
-                'Stat': p_stat,
-                'Line': p_line
-            }
-
-            clean_lines.append(my_map)
+                'Stat': attrs['stat_type'],
+                'Line': attrs['line_score'],
+                'Date': game_date
+            })
 
         return pd.DataFrame(clean_lines)
 
