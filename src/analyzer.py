@@ -68,36 +68,29 @@ class PropsAnalyzer:
                                     fd_under_odds)
             
             # looping through to see if that are any props that match the
-            # params setup to consider it as a good option for a certain bet.
-            for slip_type, data in SLIP_CONFIG.items():
-                hurdle = data['hurdle']
+            # params setup to consider it as a good option for a certain bet
+            
+            if 'Over' in valid_sides:
+                opportunities.append({
+                    "Player": pp_name,
+                    "League": "NBA",
+                    "Stat": pp_stat,
+                    "Line": pp_line,
+                    "Side": "Over",
+                    "Implied_Win_%": round(true_over * 100, 2),
+                    "FD_Odds": fd_over_odds
+                })
 
-                if 'Over' in valid_sides and true_over * 100 > hurdle:
-                    opportunities.append({
-                        "Player": pp_name,
-                        "League": "NBA",
-                        "Stat": pp_stat,
-                        "Line": pp_line,
-                        "Side": "Over",
-                        "Implied_Win_%": round(true_over * 100, 2),
-                        "Slip_Type": slip_type,
-                        "Hurdle": hurdle,
-                        "FD_Odds": fd_over_odds
-                    })
-
-                # Check the UNDER -> ADD "and 'Under' in valid_sides"
-                if 'Under' in valid_sides and true_under * 100 > hurdle:
-                    opportunities.append({
-                        "Player": pp_name,
-                        "League": "NBA",
-                        "Stat": pp_stat,
-                        "Line": pp_line,
-                        "Side": "Under",
-                        "Implied_Win_%": round(true_under * 100, 2),
-                        "Slip_Type": slip_type,
-                        "Hurdle": hurdle,
-                        "FD_Odds": fd_under_odds
-                    })
+            if 'Under' in valid_sides:
+                opportunities.append({
+                    "Player": pp_name,
+                    "League": "NBA",
+                    "Stat": pp_stat,
+                    "Line": pp_line,
+                    "Side": "Under",
+                    "Implied_Win_%": round(true_under * 100, 2),
+                    "FD_Odds": fd_under_odds
+                })
 
         return pd.DataFrame(opportunities)
 
