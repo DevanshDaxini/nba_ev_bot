@@ -3,6 +3,7 @@ import pandas as pd
 import time
 from src.config import ODDS_API_KEY, MARKETS, REGIONS, ODDS_FORMAT, SPORT_MAP
 from src.utils import SimpleCache
+from src.config import STAT_MAP
 
 class FanDuelClient:
     def __init__(self):
@@ -104,10 +105,6 @@ class FanDuelClient:
 
         clean_odds = []
         
-        # --- YOUR HOMEWORK STARTS HERE ---
-        # The JSON structure is:
-        # data (Dict) -> bookmakers (List) -> markets (List) -> outcomes (List)
-        
         # Note: 'data' is a Dictionary here, not a list of games!
         bookmakers = data.get('bookmakers', [])
         
@@ -115,8 +112,10 @@ class FanDuelClient:
             # Loop through markets (Points, Rebounds, etc.)
             for market in book['markets']:
                 stat_type = market['key']
+                
+                clean_stat_name = STAT_MAP.get(stat_type, stat_type)
+                
                 outcomes = market['outcomes']
-
                 temp_players = {}
 
                 for outcome in outcomes:
@@ -128,7 +127,7 @@ class FanDuelClient:
                     if player_name not in temp_players:
                         temp_players[player_name] = {
                             'Player': player_name,
-                            'Stat': stat_type,
+                            'Stat': clean_stat_name, # <--- USE THE CLEAN NAME HERE
                             'Line': line
                         }
 
@@ -153,7 +152,7 @@ if __name__ == "__main__":
         
         # SAVE TO FILE
         filename = "fanduel_test_data.csv"
-        df.to_csv(f'csvFiles/{filename}', index=False)
+        df.to_csv(filename, index=False)
         print(f"Saved all data to {filename}. Go open it!")
         
         # Still show the preview
