@@ -5,3 +5,4 @@ venv/
 .DS_Store
 csvFiles/
 *.csvnotebooks/
+program_runs/
