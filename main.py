@@ -55,3 +55,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# To activate venv: source venv/bin/activate  (Linux/Mac)
+# To activate venv: venv\Scripts\activate     (Windows)
+# To run: python main.py
