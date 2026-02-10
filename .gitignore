@@ -6,3 +6,4 @@ venv/
 csvFiles/
 *.csvnotebooks/
 program_runs/
+data/
