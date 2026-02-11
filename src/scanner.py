@@ -1,211 +1,253 @@
 import pandas as pd
 import xgboost as xgb
 import os
-from nba_api.stats.endpoints import ScoreboardV2, CommonTeamRoster
-from datetime import datetime
 import warnings
-
-# Suppress warnings for cleaner output
-warnings.filterwarnings('ignore')
+import unicodedata
+import re
+from datetime import datetime
+from nba_api.stats.endpoints import ScoreboardV2
+from prizepicks import fetch_current_lines_dict
 
 # --- CONFIGURATION ---
-MODEL_DIR = 'models'
-DATA_FILE = 'data/training_dataset.csv'
-today_str = datetime.now().strftime('%Y-%m-%d')
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(BASE_DIR) 
+MODEL_DIR = os.path.join(ROOT_DIR, 'models')
+DATA_FILE = os.path.join(ROOT_DIR, 'data', 'training_dataset.csv')
+PROJ_DIR = os.path.join(ROOT_DIR, 'data', 'projections')
 
-# The stats we want to predict
+warnings.filterwarnings('ignore')
+
 TARGETS = [
     'PTS', 'REB', 'AST', 'FG3M', 'BLK', 'STL', 'TOV',
     'PRA', 'PR', 'PA', 'RA', 'SB',
     'FGM', 'FTM', 'FTA'
 ]
 
-# The exact features the model expects (Must match train.py!)
 FEATURES = [
-    'PTS_L5', 'PTS_L20', 'PTS_Season',
-    'REB_L5', 'REB_L20', 'REB_Season',
-    'AST_L5', 'AST_L20', 'AST_Season',
-    'FG3M_L5', 'FG3M_L20', 'FG3M_Season',
-    'STL_L5', 'STL_L20', 'STL_Season',
-    'BLK_L5', 'BLK_L20', 'BLK_Season',
-    'TOV_L5', 'TOV_L20', 'TOV_Season',
-    'MIN_L5', 'MIN_L20', 'MIN_Season',
-    'GAME_SCORE_L5', 'GAME_SCORE_L20', 'GAME_SCORE_Season',
-    'TS_PCT', 'DAYS_REST', 'IS_HOME'
+    'PTS_L5', 'PTS_L20', 'PTS_SEASON',
+    'REB_L5', 'REB_L20', 'REB_SEASON',
+    'AST_L5', 'AST_L20', 'AST_SEASON',
+    'FG3M_L5', 'FG3M_L20', 'FG3M_SEASON',
+    'STL_L5', 'STL_L20', 'STL_SEASON',
+    'BLK_L5', 'BLK_L20', 'BLK_SEASON',
+    'TOV_L5', 'TOV_L20', 'TOV_SEASON',
+    'MIN_L5', 'MIN_L20', 'MIN_SEASON',
+    'GAME_SCORE_L5', 'GAME_SCORE_L20', 'GAME_SCORE_SEASON',
+    'TS_PCT', 'DAYS_REST', 'IS_HOME', 'IS_B2B',
+    'IMPLIED_BLOWOUT_RISK', 'TEAM_ACTIVE_QUALITY', 
+    'PTS_HEAT_L5', 'REB_HEAT_L5', 'AST_HEAT_L5',
+    'PTS_MOMENTUM', 'REB_MOMENTUM', 'AST_MOMENTUM'
 ]
-
-# Add Defense Columns
 for stat in ['PTS', 'REB', 'AST', 'FG3M', 'BLK', 'STL', 'TOV']:
     FEATURES.append(f'OPP_{stat}_ALLOWED')
 
+# --- NORMALIZATION HELPERS ---
+def normalize_name(name):
+    """Strips accents and suffixes to ensure matching."""
+    if not name: return ""
+    n = unicodedata.normalize('NFKD', name)
+    clean = "".join([c for c in n if not unicodedata.combining(c)])
+    clean = re.sub(r'[^a-zA-Z\s]', '', clean)
+    suffixes = ['Jr', 'Sr', 'III', 'II', 'IV']
+    for s in suffixes:
+        clean = clean.replace(f" {s}", "")
+    return " ".join(clean.lower().split())
+
+# --- BETTING LOGIC ---
+def get_betting_indicator(proj, line):
+    """Calculates edge and returns recommendation."""
+    if line is None or line <= 0: return "⚪ NO LINE"
+    diff_pct = (proj - line) / line
+    if diff_pct > 0.08: return f"🟢 OVER ({diff_pct:+.1%})"
+    if diff_pct < -0.08: return f"🔴 UNDER ({diff_pct:+.1%})"
+    return "⚪ NO BET"
+
+# --- CORE FUNCTIONS ---
 def load_data():
-    """Loads the historical data to calculate 'Last 5', 'Season Avg', etc."""
-    if not os.path.exists(DATA_FILE):
-        print("ERROR: Training data not found.")
-        return None
+    if not os.path.exists(DATA_FILE): return None
     df = pd.read_csv(DATA_FILE)
+    df.columns = [c.strip().upper() for c in df.columns]
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
     return df
 
-def get_todays_games():
-    """Fetches today's NBA schedule using ScoreboardV2."""
-    print(f"--- FETCHING GAMES FOR {today_str} ---")
-    
-    # UPDATED: Use ScoreboardV2 instead of scoreboard
-    board = ScoreboardV2(game_date=today_str, league_id='00', day_offset=0)
-    games = board.game_header.get_data_frame()
-    
-    if games.empty:
-        print("No games scheduled for today.")
-        return []
-    
-    game_list = []
-    # ScoreboardV2 column names are often ALL CAPS
-    for _, game in games.iterrows():
-        # Matchup isn't always in V2, so we construct it manually
-        # Note: Some versions use 'HOME_TEAM_ID', others 'TEAM_ID_HOME'
-        # We will try standard V2 columns
-        try:
-            home_id = game['HOME_TEAM_ID']
-            visitor_id = game['VISITOR_TEAM_ID']
-            # We can't easily get City names from this endpoint alone, 
-            # so we just store IDs and fetch names later if needed.
-            game_list.append({
-                'GAME_ID': game['GAME_ID'],
-                'HOME_TEAM_ID': home_id,
-                'VISITOR_TEAM_ID': visitor_id,
-                'MATCHUP': f"Game {game['GAME_ID']}" # Placeholder name
-            })
-        except KeyError:
-            print(f"Skipping malformed game row: {game}")
-            
-    return game_list
-
-def get_roster(team_id):
-    """Fetches the active roster for a team."""
-    # CommonTeamRoster is still valid
-    roster = CommonTeamRoster(team_id=team_id, season='2025-26')
-    return roster.common_team_roster.get_data_frame()['PLAYER_ID'].tolist()
-
-def prepare_player_features(player_id, opponent_id, is_home, df_history):
-    """
-    Constructs the feature row for a player based on their MOST RECENT game.
-    Essentially: "What are his stats entering tonight?"
-    """
-    # 1. Get player's history
-    player_games = df_history[df_history['PLAYER_ID'] == player_id].sort_values('GAME_DATE')
-    
-    if player_games.empty:
-        return None  # Player not in our database
-        
-    # 2. Get the most recent row
-    last_game = player_games.iloc[-1]
-    
-    # 3. Build the Feature Row
-    features = {}
-    
-    # Copy the Rolling Stats (L5, L20)
-    for col in FEATURES:
-        if col in last_game:
-            features[col] = last_game[col]
-            
-    # 4. Update Context Features (The stuff that changes tonight)
-    features['IS_HOME'] = 1 if is_home else 0
-    
-    # Calculate Real Rest Days
-    last_date = last_game['GAME_DATE']
-    today = pd.to_datetime(today_str)
-    days_rest = (today - last_date).days
-    features['DAYS_REST'] = min(days_rest, 7)
-    
-    return pd.DataFrame([features])
-
-def scan_market():
-    # 1. Load History & Models
-    df_history = load_data()
-    if df_history is None: return
-    
-    games = get_todays_games()
-    print(f"Found {len(games)} games.")
-    
-    if not games:
-        return
-
-    # Load all models once
+def load_models():
     models = {}
     for target in TARGETS:
-        model_path = f"{MODEL_DIR}/{target}_model.json"
-        if os.path.exists(model_path):
-            model = xgb.XGBRegressor()
-            model.load_model(model_path)
-            models[target] = model
-            
-    print("--- STARTING SCAN ---")
+        path = os.path.join(MODEL_DIR, f"{target}_model.json")
+        if os.path.exists(path):
+            m = xgb.XGBRegressor()
+            m.load_model(path)
+            models[target] = m
+    return models
+
+def get_todays_games():
+    """Fetches today's NBA schedule."""
+    today = datetime.now().strftime('%Y-%m-%d')
+    try:
+        board = ScoreboardV2(game_date=today, league_id='00', day_offset=0)
+        games = board.game_header.get_data_frame()
+        if 'GAME_STATUS_ID' in games.columns:
+            games = games[games['GAME_STATUS_ID'] == 1]
+        team_map = {} 
+        for _, g in games.iterrows():
+            team_map[g['HOME_TEAM_ID']] = {'is_home': True, 'opp': g['VISITOR_TEAM_ID']}
+            team_map[g['VISITOR_TEAM_ID']] = {'is_home': False, 'opp': g['HOME_TEAM_ID']}
+        return team_map
+    except Exception as e:
+        print(f"Error fetching games: {e}")
+        return {}
+
+def prepare_features(player_row, is_home=0, days_rest=2):
+    features = {col: player_row.get(col, 0) for col in FEATURES}
+    features['IS_HOME'] = 1 if is_home else 0
+    features['DAYS_REST'] = days_rest
+    features['IS_B2B'] = 1 if days_rest == 1 else 0
+    return pd.DataFrame([features])
+
+def scout_player(df_history, models, todays_teams):
+    print("\n🔎 --- PLAYER SCOUT ---")
+    query = input("Enter player name: ").strip().lower()
+    matches = df_history[df_history['PLAYER_NAME'].str.lower().str.contains(query)]
     
-    predictions = []
+    if matches.empty:
+        print("❌ Player not found.")
+        return
     
-    for game in games:
-        print(f"Scanning Game {game['GAME_ID']}...")
-        
-        # Get Players for both teams
+    unique_players = matches[['PLAYER_ID', 'PLAYER_NAME']].drop_duplicates()
+    if len(unique_players) > 1:
+        print(f"\nFound {len(unique_players)} players:")
+        print(unique_players.to_string(index=False))
+        pid_input = input("Enter PLAYER_ID from above: ")
         try:
-            home_players = get_roster(game['HOME_TEAM_ID'])
-            away_players = get_roster(game['VISITOR_TEAM_ID'])
-        except Exception as e:
-            print(f"Error fetching roster for game: {e}")
-            continue
-        
-        all_players = [(p, True) for p in home_players] + [(p, False) for p in away_players]
-        
-        for player_id, is_home in all_players:
-            # Prepare Input Data
-            input_row = prepare_player_features(player_id, 0, is_home, df_history)
-            
-            if input_row is None: continue 
-            
-            # Predict for ALL targets
-            player_preds = {'PLAYER_ID': player_id}
-            
-            # Get Name
-            try:
-                name_row = df_history[df_history['PLAYER_ID'] == player_id].iloc[0]
-                player_preds['NAME'] = name_row['PLAYER_NAME']
-                player_preds['TEAM'] = name_row['TEAM_ABBREVIATION'] # Helpful context
-            except:
-                player_preds['NAME'] = f"ID_{player_id}"
-                player_preds['TEAM'] = "N/A"
-                
-            for target, model in models.items():
-                # Ensure columns match exactly
-                # If a feature is missing (rare), fill with 0 to prevent crash
-                missing_cols = set(model.feature_names_in_) - set(input_row.columns)
-                for c in missing_cols:
-                    input_row[c] = 0
-                    
-                input_row = input_row[model.feature_names_in_]
-                pred = model.predict(input_row)[0]
-                player_preds[target] = round(pred, 1)
-                
-            predictions.append(player_preds)
-            
-    # Convert to DataFrame and Show Top Picks
-    results = pd.DataFrame(predictions)
+            matches = matches[matches['PLAYER_ID'] == int(pid_input)]
+        except: return
+
+    print("...Fetching live PrizePicks lines")
+    live_lines = fetch_current_lines_dict()
+    norm_lines = {normalize_name(k): v for k, v in live_lines.items()}
+
+    player_data = matches.sort_values('GAME_DATE').iloc[-1]
+    name = player_data['PLAYER_NAME']
+    team_id = player_data['TEAM_ID']
+    is_home = todays_teams.get(team_id, {'is_home': 0})['is_home']
     
-    if results.empty:
-        print("No predictions generated.")
+    print(f"\n📊 SCOUTING REPORT: {name}")
+    print(f"{'MARKET':<8} | {'PROJ':<8} | {'LINE':<8} | {'BET REC':<12}")
+    print("-" * 50)
+    
+    input_row = prepare_features(player_data, is_home=is_home)
+    
+    for target in TARGETS:
+        if target in models:
+            feats = models[target].feature_names_in_
+            valid_input = input_row.reindex(columns=feats, fill_value=0)
+            pred = float(models[target].predict(valid_input)[0])
+            
+            line = norm_lines.get(normalize_name(name), {}).get(target)
+            indicator = get_betting_indicator(pred, line)
+            line_str = f"{line:.2f}" if line else "N/A"
+            print(f"{target:<8} : {pred:<8.2f} | {line_str:<8} | {indicator}")
+    
+    input("\nPress Enter to continue...")
+
+def scan_all(df_history, models, todays_teams):
+    if not todays_teams:
+        print("❌ No games found.")
         return
 
-    # Filter for significant players (PTS > 10)
-    key_players = results[results['PTS'] > 10].sort_values('PTS', ascending=False)
+    print("\n🚀 Fetching Live PrizePicks Lines...")
+    live_lines = fetch_current_lines_dict() 
+
+    print(f"\n🚀 Scanning All Markets...")
+    all_projections = []
+    best_bets = [] # Stores potential plays with mathematical edge
     
-    print("\n--- TOP SCORING PROJECTIONS FOR TONIGHT ---")
-    # Show clean columns
-    cols_to_show = ['NAME', 'TEAM', 'PTS', 'REB', 'AST', 'PRA']
-    print(key_players[cols_to_show].head(15).to_string(index=False))
+    for team_id, info in todays_teams.items():
+        team_players = df_history[df_history['TEAM_ID'] == team_id]['PLAYER_ID'].unique()
+        for pid in team_players:
+            p_rows = df_history[df_history['PLAYER_ID'] == pid].sort_values('GAME_DATE')
+            if p_rows.empty: continue
+            last_row = p_rows.iloc[-1]
+            player_name = last_row['PLAYER_NAME']
+            
+            input_row = prepare_features(last_row, is_home=info['is_home'])
+            preds = {'NAME': player_name, 'TEAM': last_row['TEAM_ABBREVIATION']}
+            
+            for target, model in models.items():
+                feats = model.feature_names_in_
+                valid_input = input_row.reindex(columns=feats, fill_value=0)
+                proj = float(model.predict(valid_input)[0])
+                
+                # Rounding for cleanliness
+                preds[f"{target}_PROJ"] = round(proj, 2)
+                line = live_lines.get(player_name, {}).get(target)
+                preds[f"{target}_LINE"] = round(line, 2) if line else None
+                
+                rec = get_betting_indicator(proj, line)
+                preds[f"{target}_REC"] = rec
+                
+                # Capture the raw edge for sorting
+                if line and line > 0:
+                    edge = (proj - line) / line
+                    if abs(edge) > 0.08: # Only track if edge meets 8% threshold
+                        best_bets.append({
+                            'REC': rec,
+                            'NAME': player_name,
+                            'TARGET': target,
+                            'AI': round(proj, 2),
+                            'PP': round(line, 2),
+                            'EDGE': edge # Positive for Over, Negative for Under
+                        })
+            
+            all_projections.append(preds)
+            
+    res_df = pd.DataFrame(all_projections)
+    if not res_df.empty:
+        # Separate and sort the top 5 Overs and top 5 Unders
+        top_overs = sorted([b for b in best_bets if b['EDGE'] > 0], key=lambda x: x['EDGE'], reverse=True)[:5]
+        top_unders = sorted([b for b in best_bets if b['EDGE'] < 0], key=lambda x: x['EDGE'])[:5]
+        
+        print("\n🔥 TOP AI ADVANTAGES FOUND:")
+        print(f" {'REC':<18} | {'PLAYER':<20} | {'STAT':<5} | {'AI vs PP':<15}")
+        print("-" * 70)
+        
+        # Print Top Overs
+        for bet in top_overs:
+            print(f" {bet['REC']:<18} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f}")
+            
+        print("-" * 70)
+        
+        # Print Top Unders
+        for bet in top_unders:
+            print(f" {bet['REC']:<18} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f}")
+        
+        # Save full data to CSV for record keeping
+        if not os.path.exists(PROJ_DIR): os.makedirs(PROJ_DIR)
+        path = os.path.join(PROJ_DIR, 'todays_automated_analysis.csv')
+        res_df.to_csv(path, index=False)
+        print(f"\n✅ Full analysis saved to {path}")
+    input("\nPress Enter to continue...")
     
-    # Save all projections
-    results.to_csv('data/todays_projections.csv', index=False)
-    print(f"\nFull projections saved to data/todays_projections.csv")
+def main():
+    print("...Initializing System")
+    df = load_data()
+    models = load_models()
+    if df is None or not models:
+        print("❌ Setup failed. Check your data and models.")
+        return
+
+    while True:
+        todays_teams = get_todays_games() # This was the missing function
+        print("\n" + "="*30 + "\n   🤖 NBA AI SCANNER v2.3\n" + "="*30)
+        print(f"   📅 Date: {datetime.now().strftime('%Y-%m-%d')}")
+        print(f"   🏀 Games: {len(todays_teams) // 2}")
+        print("-" * 30)
+        print("1. 🚀 Run Automated Market Scan\n2. 🔎 Scout Player (with live PP comparison)\n0. 🚪 Exit")
+        
+        choice = input("\nSelect: ").strip()
+        if choice == '1': scan_all(df, models, todays_teams)
+        elif choice == '2': scout_player(df, models, todays_teams)
+        elif choice == '0': break
 
 if __name__ == "__main__":
-    scan_market()
+    main()
