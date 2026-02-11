@@ -75,6 +75,54 @@ class PrizePicksClient:
             })
 
         return pd.DataFrame(clean_lines)
+    
+def fetch_current_lines_dict():
+    """Helper for scanner.py to get ONLY NBA lines in a searchable dictionary format."""
+    client = PrizePicksClient()
+    df = client.fetch_board()
+    
+    if df.empty:
+        return {}
+    
+    # Transform: { 'LeBron James': { 'PTS': 24.5, 'REB': 7.5 ... }, ... }
+    lines_dict = {}
+    
+    for _, row in df.iterrows():
+        # --- NEW: LEAGUE FILTER ---
+        # Only process rows where the league is strictly 'NBA'
+        if row.get('League') != 'NBA':
+            continue
+            
+        player = row['Player']
+        stat = row['Stat']
+        line = row['Line']
+        
+        if player not in lines_dict:
+            lines_dict[player] = {}
+        
+        # Standardize Stat names to match your TARGETS
+        stat_map = {
+            'Points': 'PTS', 
+            'Rebounds': 'REB', 
+            'Assists': 'AST',
+            '3-Pt Made': 'FG3M', 
+            'Blocks': 'BLK', 
+            'Blocked Shots': 'BLK', # PrizePicks variant
+            'Steals': 'STL',
+            'Turnovers': 'TOV', 
+            'Pts+Rebs+Asts': 'PRA', 
+            'Pts+Rebs': 'PR',
+            'Pts+Asts': 'PA', 
+            'Rebs+Asts': 'RA', 
+            'Blks+Stls': 'SB',
+            'Free Throws Made': 'FTM', 
+            'Field Goals Made': 'FGM'
+        }
+        
+        clean_stat = stat_map.get(stat, stat)
+        lines_dict[player][clean_stat] = float(line)
+        
+    return lines_dict
 
 # --- TEST BLOCK ---
 if __name__ == "__main__":
