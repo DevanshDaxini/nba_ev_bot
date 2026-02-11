@@ -7,7 +7,7 @@ from nba_api.stats.endpoints import commonteamroster
 from nba_api.stats.static import teams
 
 # --- CONFIGURATION ---
-SEASONS = ['2022-23', '2023-24', '2024-25']
+SEASONS = ['2022-23', '2023-24', '2024-25', '2025-26']
 DATA_FOLDER = 'data'
 OUTPUT_FILE = f'{DATA_FOLDER}/raw_game_logs.csv'
 
