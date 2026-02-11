@@ -56,19 +56,19 @@ def normalize_name(name):
 # --- BETTING LOGIC ---
 def get_betting_indicator(proj, line, target):
     """
-    Calculates edge with dynamic thresholds based on model confidence.
-    - High-Variance Stats (STL, BLK, SB): 15% Edge required.
-    - Standard Stats (PTS, REB, AST, etc.): 8% Edge required.
+    Calculates edge with tiered thresholds based on model confidence.
+    - High-Variance (STL, BLK, SB): 15% Edge required.
+    - Standard (PTS, REB, AST, etc.): 8% Edge required.
     """
     if line is None or line <= 0: return "⚪ NO LINE"
     
     diff_pct = (proj - line) / line
     
-    # Define high-variance/low-confidence markets
-    high_variance_stats = ['STL', 'BLK', 'SB']
+    # Define low-confidence markets (those with R2 < 0.25)
+    low_confidence_stats = ['STL', 'BLK', 'SB']
     
-    # Set threshold based on the target
-    threshold = 0.15 if target in high_variance_stats else 0.08
+    # Apply stricter threshold for high-variance stats
+    threshold = 0.15 if target in low_confidence_stats else 0.08
     
     if diff_pct > threshold: return f"🟢 OVER ({diff_pct:+.1%})"
     if diff_pct < -threshold: return f"🔴 UNDER ({diff_pct:+.1%})"
@@ -157,7 +157,8 @@ def scout_player(df_history, models, todays_teams):
             pred = float(models[target].predict(valid_input)[0])
             
             line = norm_lines.get(normalize_name(name), {}).get(target)
-            indicator = get_betting_indicator(pred, line)
+            # Pass target so tiered thresholds and signature match
+            indicator = get_betting_indicator(pred, line, target)
             line_str = f"{line:.2f}" if line else "N/A"
             print(f"{target:<8} : {pred:<8.2f} | {line_str:<8} | {indicator}")
     
@@ -165,15 +166,15 @@ def scout_player(df_history, models, todays_teams):
 
 def scan_all(df_history, models, todays_teams):
     if not todays_teams:
-        print("❌ No games found.")
-        return
+        print("❌ No games found."); return
 
     print("\n🚀 Fetching Live PrizePicks Lines...")
     live_lines = fetch_current_lines_dict() 
+    # Standardize names for matching
+    norm_lines = {normalize_name(k): v for k, v in live_lines.items()}
 
-    print(f"\n🚀 Scanning All Markets...")
-    all_projections = []
-    best_bets = [] # Stores potential plays with mathematical edge
+    print(f"🚀 Scanning All Markets...")
+    all_projs, best_bets = [], []
     
     for team_id, info in todays_teams.items():
         team_players = df_history[df_history['TEAM_ID'] == team_id]['PLAYER_ID'].unique()
@@ -190,52 +191,39 @@ def scan_all(df_history, models, todays_teams):
                 feats = model.feature_names_in_
                 valid_input = input_row.reindex(columns=feats, fill_value=0)
                 proj = float(model.predict(valid_input)[0])
-                
-                # Rounding for cleanliness
                 preds[f"{target}_PROJ"] = round(proj, 2)
-                line = live_lines.get(player_name, {}).get(target)
+                
+                # Fetch and compare line
+                line = norm_lines.get(normalize_name(player_name), {}).get(target)
                 preds[f"{target}_LINE"] = round(line, 2) if line else None
                 
+                # NEW: Pass 'target' to the tiered indicator
                 rec = get_betting_indicator(proj, line, target)
                 preds[f"{target}_REC"] = rec
                 
-                # Capture the raw edge for sorting
-                if line and line > 0:
+                if "🟢" in rec or "🔴" in rec:
                     edge = (proj - line) / line
-                    if abs(edge) > 0.08: # Only track if edge meets 8% threshold
-                        best_bets.append({
-                            'REC': rec,
-                            'NAME': player_name,
-                            'TARGET': target,
-                            'AI': round(proj, 2),
-                            'PP': round(line, 2),
-                            'EDGE': edge # Positive for Over, Negative for Under
-                        })
+                    best_bets.append({
+                        'REC': rec, 'NAME': player_name, 'TARGET': target,
+                        'AI': round(proj, 2), 'PP': round(line, 2), 'EDGE': edge
+                    })
+            all_projs.append(preds)
             
-            all_projections.append(preds)
-            
-    res_df = pd.DataFrame(all_projections)
+    res_df = pd.DataFrame(all_projs)
     if not res_df.empty:
-        # Separate and sort the top 5 Overs and top 5 Unders
+        # Separate and sort Top 5 Overs and Unders
         top_overs = sorted([b for b in best_bets if b['EDGE'] > 0], key=lambda x: x['EDGE'], reverse=True)[:5]
         top_unders = sorted([b for b in best_bets if b['EDGE'] < 0], key=lambda x: x['EDGE'])[:5]
         
         print("\n🔥 TOP AI ADVANTAGES FOUND:")
         print(f" {'REC':<18} | {'PLAYER':<20} | {'STAT':<5} | {'AI vs PP':<15}")
-        print("-" * 70)
-        
-        # Print Top Overs
+        print("-" * 75)
         for bet in top_overs:
             print(f" {bet['REC']:<18} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f}")
-            
-        print("-" * 70)
-        
-        # Print Top Unders
+        print("-" * 75)
         for bet in top_unders:
             print(f" {bet['REC']:<18} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f}")
         
-        # Save full data to CSV for record keeping
-        if not os.path.exists(PROJ_DIR): os.makedirs(PROJ_DIR)
         path = os.path.join(PROJ_DIR, 'todays_automated_analysis.csv')
         res_df.to_csv(path, index=False)
         print(f"\n✅ Full analysis saved to {path}")
