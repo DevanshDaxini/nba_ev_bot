@@ -27,8 +27,7 @@ except ImportError:
 
 # --- TOOL 1: ODDS SCANNER (Your Original Code) ---
 def run_odds_scanner():
-    os.system('cls' if os.name == 'nt' else 'clear')
-    
+    print("")
     print("")
     print("\n" + "="*40)
     print("   💰 ODDS ARBITRAGE SCANNER")
@@ -105,7 +104,6 @@ def main_menu():
     while True:
         # Clear screen for a clean UI
         os.system('cls' if os.name == 'nt' else 'clear')
-        
         print("")
         print("")
         print("\n" + "🏀"*12 + "  SPORTS ANALYTICS HUB  " + "🏀"*12)
