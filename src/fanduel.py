@@ -72,6 +72,11 @@ class FanDuelClient:
             print("") # New line after loop
 
         # 3. Save & Return
+        # --- FIX: Handle Empty Data Gracefully ---
+        if not all_data:
+            # Return an empty DataFrame BUT with the correct columns defined
+            return pd.DataFrame(columns=['Player', 'Stat', 'Line', 'Odds', 'Side', 'Date'])
+            
         final_df = pd.DataFrame(all_data)
 
         if not final_df.empty:
