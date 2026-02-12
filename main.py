@@ -15,12 +15,10 @@ try:
     from src.prizepicks import PrizePicksClient
     from src.fanduel import FanDuelClient
     from src.analyzer import PropsAnalyzer
-    # Import specific functions from scanner to run them programmatically
     from src.scanner import load_data, load_models, get_games, prepare_features, normalize_name
 except ImportError as e:
     print(f"⚠️ Warning: Could not import core modules: {e}")
 
-# Try importing the AI Scanner module for the menu
 ai_scanner_module = None
 try:
     import src.scanner as ai_scanner_module
@@ -29,11 +27,59 @@ except ImportError:
 
 warnings.filterwarnings('ignore')
 
+# --- 1. PP NORMALIZATION MAP (PrizePicks -> Standard/FanDuel Name) ---
+# This ensures "Blocked Shots" matches "Blocks", etc.
+PP_NORMALIZATION_MAP = {
+    'Blocked Shots': 'Blocks',
+    '3-PT Made': '3-Pt Made',
+    'Three Point Field Goals': '3-Pt Made',
+    'Free Throws Made': 'Free Throws Made',
+    'Turnovers': 'Turnovers',
+    'Steals': 'Steals',
+    'Fantasy Score': 'Fantasy', # Filter out if needed, or map
+}
+
+# --- 2. STAT MAPPING (Standard Name -> AI Target Code) ---
+STAT_MAPPING = {
+    # Core
+    'Points': 'PTS',
+    'Rebounds': 'REB',
+    'Assists': 'AST',
+    'Pts+Rebs+Asts': 'PRA',
+    'Pts+Rebs': 'PR',
+    'Pts+Asts': 'PA',
+    'Rebs+Asts': 'RA',
+    'Blks+Stls': 'SB',
+    
+    # Alternative Markets (The ones you were missing)
+    '3-Pt Made': 'FG3M',
+    'Blocks': 'BLK',
+    'Steals': 'STL',
+    'Turnovers': 'TOV',
+    'Free Throws Made': 'FTM',
+    'Field Goals Made': 'FGM',
+    'Free Throws Attempted': 'FTA'
+}
+
+# --- SCORING CONFIGURATION ---
+# Higher weight = More predictable/reliable stat
+# Lower weight = High variance/streaky stat
+VOLATILITY_MAP = {
+    'PTS': 1.0,  
+    'REB': 1.15,  
+    'AST': 1.1,
+    'PRA': 1.05,  
+    'PR': 1.05,
+    'PA': 1.05,
+    'RA': 1.1,
+    'FG3M': 0.90, 
+    'BLK': 0.75, 
+    'STL': 0.75,
+    'TOV': 0.9   
+}
+
 # --- HELPER: RUN AI PREDICTIONS ---
 def get_ai_predictions():
-    """
-    Runs the AI model logic silently and returns a DataFrame of projections.
-    """
     print("...Loading AI Models & Data")
     df_history = load_data()
     models = load_models()
@@ -41,11 +87,8 @@ def get_ai_predictions():
     if df_history is None or not models:
         return pd.DataFrame()
 
-    # Get games for Today (0) and Tomorrow (1) to cover all bases
     todays_teams = get_games(date_offset=0, require_scheduled=True)
     tomorrows_teams = get_games(date_offset=1, require_scheduled=True)
-    
-    # Merge dictionaries
     all_teams = {**todays_teams, **tomorrows_teams}
     
     if not all_teams:
@@ -64,7 +107,6 @@ def get_ai_predictions():
             
             input_row = prepare_features(last_row, is_home=info['is_home'])
             
-            # Predict for all targets
             for target, model in models.items():
                 feats = model.feature_names_in_
                 valid_input = input_row.reindex(columns=feats, fill_value=0)
@@ -72,7 +114,7 @@ def get_ai_predictions():
                 
                 ai_results.append({
                     'Player': player_name,
-                    'Stat': target,
+                    'Stat': target, 
                     'AI_Proj': round(proj, 2)
                 })
     
@@ -90,6 +132,10 @@ def run_correlated_scanner():
     try:
         pp = PrizePicksClient()
         pp_df = pp.fetch_board()
+        
+        if not pp_df.empty:
+            pp_df['Stat'] = pp_df['Stat'].replace(PP_NORMALIZATION_MAP)
+
         fd = FanDuelClient()
         fd_df = fd.get_all_odds()
         
@@ -108,12 +154,17 @@ def run_correlated_scanner():
             
         print(f"✅ Found {len(math_bets)} math-based plays.")
         
+        # --- DEBUG: SHOW FOUND STATS ---
+        unique_stats = math_bets['Stat'].unique()
+        print(f"   ℹ️  Markets found in math scan: {', '.join(unique_stats)}")
+        # -------------------------------
+        
     except Exception as e:
         print(f"❌ Error in Odds Scanner: {e}")
         return
 
     # 2. Run AI Scanner (Data)
-    print("\n--- 2. generating AI Projections ---")
+    print("\n--- 2. Generating AI Projections ---")
     try:
         ai_df = get_ai_predictions()
         if ai_df.empty:
@@ -127,55 +178,68 @@ def run_correlated_scanner():
     # 3. Correlate Results
     print("\n--- 3. Correlating Results ---")
     
-    # Normalize names for merging
+    math_bets['Stat'] = math_bets['Stat'].map(STAT_MAPPING).fillna(math_bets['Stat'])
     math_bets['CleanName'] = math_bets['Player'].apply(normalize_name)
     ai_df['CleanName'] = ai_df['Player'].apply(normalize_name)
     
-    # Merge Math Bets with AI Projections
     merged = pd.merge(math_bets, ai_df, on=['CleanName', 'Stat'], how='inner')
     
     correlated_plays = []
     
     for _, row in merged.iterrows():
-        math_side = row['Side'] # 'Over' or 'Under'
+        math_side = row['Side'] 
         line = row['Line']
         ai_proj = row['AI_Proj']
+        win_pct = row['Implied_Win_%']
         
-        # Check for AGREEMENT
-        ai_side = "None"
-        if ai_proj > line: ai_side = "Over"
-        elif ai_proj < line: ai_side = "Under"
+        # 1. AI Edge Percentage (Capped at 25% to ignore outliers/errors)
+        ai_diff_raw = abs(ai_proj - line)
+        ai_edge_pct = min((ai_diff_raw / line) * 100, 25) if line != 0 else 0
         
-        # Only keep plays where Math and AI agree
+        # 2. Agreement Check
+        ai_side = "Over" if ai_proj > line else "Under"
         if math_side == ai_side:
-            # Calculate AI Edge
-            ai_diff = ai_proj - line
+            
+            # --- NORMALIZED SCORING (0-10 Scale for each) ---
+            
+            # MATH: Scales 51% (Weak) to 56% (Elite) onto a 0-10 scale
+            # (win_pct - 51) / (56 - 51) * 10
+            math_rank = max(0, min(10, (win_pct - 51) / 5 * 10))
+                
+            # 2. AI Rank (0-10)
+            ai_rank = max(0, min(10, (ai_edge_pct / 20) * 10))
+            
+            # 3. Apply Volatility Weight
+            stat_weight = VOLATILITY_MAP.get(row['Stat'], 1.0)
+            
+            # 4. Final Balanced & Weighted Score
+            # We average the ranks, scale to 100, then apply the stat reliability weight
+            combined_score = ((math_rank * 0.5) + (ai_rank * 0.5)) * 10 * stat_weight
             
             correlated_plays.append({
-                'Date': row['Date'],
-                'Player': row['Player_x'], # Name from math df
+                'Player': row['Player_x'], 
                 'Stat': row['Stat'],
                 'Line': line,
                 'Side': math_side,
-                'Win%': row['Implied_Win_%'], # From FanDuel
+                'Win%': win_pct, 
                 'AI_Proj': ai_proj,
-                'AI_Diff': f"{ai_diff:+.1f}" # e.g. +2.5 or -1.2
+                'Score': round(combined_score, 1)
             })
             
     # 4. Display Results
     if not correlated_plays:
-        print("❌ No correlated plays found (Math and AI disagreed on everything).")
+        print("❌ No correlated plays found.")
     else:
-        # Create DataFrame and Sort by Win%
+        # Sort by the new Weighted Score instead of just Win%
         final_df = pd.DataFrame(correlated_plays)
-        final_df = final_df.sort_values(by='Win%', ascending=False).head(20)
+        final_df = final_df.sort_values(by='Score', ascending=False).head(20)
         
-        print("\n💎 TOP 20 CORRELATED PLAYS (Math + AI Agree)")
-        print(f"{'PLAYER':<20} | {'STAT':<5} | {'LINE':<5} | {'SIDE':<5} | {'WIN%':<6} | {'AI PROJ':<8} | {'DIFF'}")
-        print("-" * 85)
+        print("\n💎 TOP 20 CORRELATED PLAYS (Math + AI Confidence)")
+        print(f"{'PLAYER':<18} | {'STAT':<5} | {'LINE':<5} | {'SIDE':<5} | {'WIN%':<6} | {'AI PROJ':<7} | {'SCORE'}")
+        print("-" * 75)
         
         for _, row in final_df.iterrows():
-            print(f"{row['Player']:<20} | {row['Stat']:<5} | {row['Line']:<5} | {row['Side']:<5} | {row['Win%']:<6}% | {row['AI_Proj']:<8} | {row['AI_Diff']}")
+            print(f"{row['Player']:<18} | {row['Stat']:<5} | {row['Line']:<5} | {row['Side']:<5} | {row['Win%']:<5}% | {row['AI_Proj']:<7} | {row['Score']}")
             
         # Save
         path = "program_runs/correlated_plays.csv"
@@ -185,7 +249,7 @@ def run_correlated_scanner():
 
     input("\nPress Enter to return to menu...")
 
-# --- TOOL 2: ODDS SCANNER (Original) ---
+# --- TOOL 2: ODDS SCANNER ---
 def run_odds_scanner():
     print("")
     print("\n" + "="*40)
@@ -196,6 +260,12 @@ def run_odds_scanner():
         print("--- 1. Fetching PrizePicks Lines ---")
         pp = PrizePicksClient()
         pp_df = pp.fetch_board()
+        
+        # --- FIX: NORMALIZE NAMES HERE TOO ---
+        if not pp_df.empty:
+             pp_df['Stat'] = pp_df['Stat'].replace(PP_NORMALIZATION_MAP)
+        # -------------------------------------
+        
         print(f"✅ Got {len(pp_df)} PrizePicks props.")
 
         print("\n--- 2. Fetching FanDuel Odds ---")
@@ -220,11 +290,9 @@ def run_odds_scanner():
             output_folder = "program_runs"
             if not os.path.exists(output_folder): os.makedirs(output_folder)
             
-            # Save by date
             for game_date in sorted_bets['Date'].unique():
                 day_data = sorted_bets[sorted_bets['Date'] == game_date]
                 day_data.to_csv(f"{output_folder}/scan_{game_date}.csv", index=False)
-
         else:
             print("❌ No profitable matches found!")
             
@@ -233,7 +301,7 @@ def run_odds_scanner():
     
     input("\nPress Enter to return to menu...")
 
-# --- TOOL 3: AI SCANNER (Original) ---
+# --- TOOL 3: AI SCANNER ---
 def run_ai_scanner():
     if ai_scanner_module:
         try:
@@ -248,9 +316,10 @@ def run_ai_scanner():
 # --- MAIN MENU UI ---
 def main_menu():
     while True:
-        # Soft Clear
-        print("\n" * 50)
+        os.system('cls' if os.name == 'nt' else 'clear')
         
+        print("")
+        print("")
         print("\n" + "🏀"*12 + "  SPORTS ANALYTICS HUB  " + "🏀"*12)
         print("-" * 72)
         print("\nSelect a Tool:")
