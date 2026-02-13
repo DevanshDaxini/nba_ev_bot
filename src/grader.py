@@ -1,8 +1,41 @@
+"""
+Prediction Accuracy Grader
+
+Compares AI predictions to actual game results and tracks win rate over time.
+Provides accountability and validates model performance in production.
+
+Workflow:
+    1. User selects date (today or yesterday)
+    2. Load predictions from program_runs/scan_YYYY-MM-DD.csv
+    3. Fetch actual stats from NBA API
+    4. Compare each prediction to reality (WIN/LOSS/PUSH)
+    5. Calculate win rate
+    6. Log results to program_runs/win_rate_history.csv
+    
+Output Files:
+    - Updates scan_YYYY-MM-DD.csv with 'Result' and 'Actual' columns
+    - Appends to win_rate_history.csv (Date, Total_Bets, Wins, Losses, Win_Rate)
+    
+Usage:
+    $ python3 -m src.grader
+    
+Example Output:
+    --- GRADING BETS FOR 2026-02-12 ---
+    Fetching actual game results from NBA API...
+    Found stats for 248 players.
+    
+    --- REPORT CARD (2026-02-12) ---
+    Wins:   17
+    Losses:  3
+    Pushes:  1 (Excluded)
+    WIN RATE: 85.00%
+"""
+
 import pandas as pd
 import os
 from datetime import datetime
 from nba_api.stats.endpoints import playergamelogs
-from src.config import STAT_MAP
+from config import STAT_MAP
 
 # PrizePicks Name -> NBA API Column Name
 NBA_STAT_MAP = {
@@ -10,10 +43,12 @@ NBA_STAT_MAP = {
     'Rebounds': 'REB',
     'Assists': 'AST',
     '3-PT Made': 'FG3M',
-    'Blocks': 'BLK',
+    '3-PT Attempted': 'FG3A',
+    'Blocked Shots': 'BLK',
     'Steals': 'STL',
     'Turnovers': 'TOV',
-    'Field Goals Made': 'FGM',
+    'FG Made': 'FGM',
+    'FG Attempted': 'FGA',
     'Free Throws Made': 'FTM',
     'Free Throws Attempted': 'FTA',
     'Pts+Rebs+Asts': 'PRA',
@@ -65,9 +100,24 @@ def update_history_file(date_str, wins, losses, total_graded, win_rate):
 
 def normalize_name(name):
     """
-    Removes common suffixes to help match PrizePicks names to NBA API names.
-    Ex: 'Tim Hardaway Jr.' -> 'Tim Hardaway'
+    Remove suffixes for name matching.
+    
+    Handles:
+        'Tim Hardaway Jr.' → 'tim hardaway'
+        'LeBron James Sr.' → 'lebron james'
+        
+    Warning:
+        Can cause false matches:
+        'Marcus Morris' matches 'Markieff Morris'
+        (Both normalize to 'marcus/markieff morris')
+        
+    Args:
+        name (str): Player name with possible suffix
+        
+    Returns:
+        str: Lowercase name without Jr/Sr/II/III/IV
     """
+
     name = name.lower().replace('.', '') # Remove periods
     suffixes = [' jr', ' sr', ' ii', ' iii', ' iv']
     for suffix in suffixes:
@@ -76,6 +126,37 @@ def normalize_name(name):
     return name.strip()
 
 def grade_bets():
+    """
+    Grade predictions against actual results.
+    
+    Process:
+        1. Prompt user for date (default = yesterday)
+        2. Load predictions from program_runs/scan_{date}.csv
+        3. Fetch actual stats from playergamelogs API
+        4. Create lookup dict: {normalized_name: stats}
+        5. For each prediction:
+            a. Find player in lookup (try exact, then normalized)
+            b. Get actual stat value
+            c. Determine WIN/LOSS/PUSH
+        6. Calculate win rate (excludes pushes)
+        7. Update scan CSV with results
+        8. Append to win_rate_history.csv
+        
+    Grading Logic:
+        OVER bet: WIN if actual > line, LOSS if actual < line
+        UNDER bet: WIN if actual < line, LOSS if actual > line
+        PUSH: actual == line (excluded from win rate)
+        
+    Example:
+        Prediction: LeBron James, Points, 25.5, Over
+        Actual: 28 points
+        Result: WIN (28 > 25.5)
+        
+    Note:
+        Handles combo stats (PRA, PR, PA, RA, SB) automatically
+        DNPs (Did Not Play) marked as "DNP/Unknown"
+    """
+
     target_date = get_user_date()
     filename = f"program_runs/scan_{target_date}.csv"
     
