@@ -16,6 +16,7 @@ try:
     from src.fanduel import FanDuelClient
     from src.analyzer import PropsAnalyzer
     from src.scanner import load_data, load_models, get_games, prepare_features, normalize_name
+    from src.config import MODEL_QUALITY, ACTIVE_TARGETS
 except ImportError as e:
     print(f"⚠️ Warning: Could not import core modules: {e}")
 
@@ -125,6 +126,10 @@ def get_ai_predictions():
             input_row = prepare_features(last_row, is_home=info['is_home'])
             
             for target, model in models.items():
+                # Only predict for active targets (filtered to elite/strong/decent)
+                if target not in ACTIVE_TARGETS:
+                    continue
+                    
                 feats = model.feature_names_in_
                 valid_input = input_row.reindex(columns=feats, fill_value=0)
                 proj = float(model.predict(valid_input)[0])
@@ -237,7 +242,12 @@ def run_correlated_scanner():
             # We average the ranks, scale to 100, then apply the stat reliability weight
             combined_score = ((math_rank * 0.5) + (ai_rank * 0.5)) * 10 * stat_weight
             
+            # Get tier info
+            tier_info = MODEL_QUALITY.get(row['Stat'], {})
+            tier_emoji = tier_info.get('emoji', '?')
+            
             correlated_plays.append({
+                'Tier': tier_emoji,
                 'Player': row['Player_x'], 
                 'Stat': row['Stat'],
                 'Line': line,
@@ -256,11 +266,11 @@ def run_correlated_scanner():
         final_df = final_df.sort_values(by='Score', ascending=False).head(20)
         
         print("\n💎 TOP 20 CORRELATED PLAYS (Math + AI Confidence)")
-        print(f"{'PLAYER':<18} | {'STAT':<5} | {'LINE':<5} | {'SIDE':<5} | {'WIN%':<6} | {'AI PROJ':<7} | {'SCORE'}")
-        print("-" * 75)
+        print(f"{'TIER':<6} | {'PLAYER':<18} | {'STAT':<5} | {'LINE':<5} | {'SIDE':<5} | {'WIN%':<6} | {'AI PROJ':<7} | {'SCORE'}")
+        print("-" * 85)
         
         for _, row in final_df.iterrows():
-            print(f"{row['Player']:<18} | {row['Stat']:<5} | {row['Line']:<5} | {row['Side']:<5} | {row['Win%']:<5}% | {row['AI_Proj']:<7} | {row['Score']}")
+            print(f"{row['Tier']:<6} | {row['Player']:<18} | {row['Stat']:<5} | {row['Line']:<5} | {row['Side']:<5} | {row['Win%']:<5}% | {row['AI_Proj']:<7} | {row['Score']}")
             
         # Save
         path = "program_runs/correlated_plays.csv"
