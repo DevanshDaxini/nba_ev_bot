@@ -1,20 +1,46 @@
-# Core Data Libraries
+# --- Core Data ---
 pandas
 numpy
 
-# API & Web Scraping
+# --- Sports & API ---
+nba_api
 requests
 
-# Sports Data
-nba_api
+# --- Machine Learning & AI ---
+scikit-learn
+xgboost          # Required for train.py and scanner.py
+joblib           # Required for saving/loading models
 
-# Text Matching (for matching "L. James" to "LeBron James")
-fuzzywuzzy
+# --- Visualization ---
+matplotlib       # Required for visualizer.py
+
+# --- Utilities ---
+python-dotenv    # Required to load ODDS_API_KEY from .env
+fuzzywuzzy       # Name matching
 python-Levenshtein
 
-# Machine Learning (for later)
-scikit-learn
-
-# Jupyter Notebook Support (Fixes your VS Code issues)
+# --- Development & Notebooks ---
 ipykernel
 jupyter
+
+# How to Setup & Run
+# 1. Install dependencies:
+#    pip install -r requirements.txt
+# 2. Set up your .env file with your ODDS_API_KEY:
+#    ODDS_API_KEY=your_api_key_here
+#    You can obtain an API key from https://the-odds-api.com/
+# 3. Create the Virtual Environment (optional but recommended):
+#    python -m venv venv
+#    source venv/bin/activate  # On Windows: venv\Scripts\activate
+# 4. Run the main application:
+#    python main.py
+
+
+## Note: The above instructions assume you have Python 
+#  installed and added to your PATH
+
+"""
+Cheat Sheet for Running the Bot:
+source venv/bin/activate
+python3 main.py
+"""
