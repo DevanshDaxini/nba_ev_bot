@@ -6,7 +6,7 @@ import os
 st.set_page_config(page_title="NBA AI Scanner", layout="wide")
 
 # --- HEADER ---
-st.title("🤖 NBA AI Scanner (Predictive Model)")
+st.title("🏀 NBA AI Scanner")
 st.markdown("XGBoost Projections vs. PrizePicks Lines")
 
 # --- SIDEBAR CONTROLS ---
