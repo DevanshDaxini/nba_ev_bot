@@ -6,4 +6,4 @@ venv/
 fanduel_cache/
 models/
 csvFiles/
-data/training_dataset.csv
+data/
