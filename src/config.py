@@ -127,3 +127,89 @@ STAT_MAP = {
     'Rebs+Asts': 'RA',
     'Blks+Stls': 'SB'
 }
+
+# 4. MODEL QUALITY TIERS (Based on Actual Directional Accuracy)
+# Updated: 2026-02-13 from your training results
+MODEL_TIERS = {
+    'ELITE': {
+        'models': ['PTS', 'FGM', 'PA', 'PR', 'PRA'],
+        'accuracy_range': '85-90%',
+        'edge_threshold': 1.5,  # Minimum edge to recommend
+        'description': '⭐ Highest confidence - bet heavily',
+        'emoji': '⭐'
+    },
+    'STRONG': {
+        'models': ['FG3A', 'FGA'],
+        'accuracy_range': '80-85%',
+        'edge_threshold': 2.0,
+        'description': '✓ Good confidence - bet selectively',
+        'emoji': '✓'
+    },
+    'DECENT': {
+        'models': ['FG3M', 'FTA', 'RA', 'FTM', 'REB', 'AST'],  # Added REB & AST
+        'accuracy_range': '72-80%',
+        'edge_threshold': 2.5,  # Higher threshold = only show when edge is big
+        'description': '~ Moderate confidence - bet carefully',
+        'emoji': '~'
+    },
+    'RISKY': {
+        'models': ['STL', 'TOV'],  # Still profitable but volatile
+        'accuracy_range': '61-71%',
+        'edge_threshold': 3.0,  # Need BIG edge to justify
+        'description': '⚠️ High variance - bet only large edges',
+        'emoji': '⚠️'
+    },
+    'AVOID': {
+        'models': ['BLK', 'SB'],  # These are genuinely unpredictable
+        'accuracy_range': '35-53%',
+        'edge_threshold': 10.0,  # Effectively never show unless massive edge
+        'description': '❌ Too random - avoid unless huge edge',
+        'emoji': '❌'
+    }
+}
+
+# Create lookup dict for quick tier checking
+MODEL_QUALITY = {}
+for tier, data in MODEL_TIERS.items():
+    for model in data['models']:
+        MODEL_QUALITY[model] = {
+            'tier': tier,
+            'threshold': data['edge_threshold'],
+            'emoji': data['emoji']
+        }
+
+# 5. SCANNING MODE
+# Controls which tiers to scan
+# Options: 'ELITE_ONLY', 'SAFE', 'BALANCED', 'AGGRESSIVE', 'ALL'
+SCANNING_MODE = 'BALANCED'
+
+SCANNING_MODES = {
+    'ELITE_ONLY': MODEL_TIERS['ELITE']['models'],  # Just 5 models
+    'SAFE': (MODEL_TIERS['ELITE']['models'] + 
+             MODEL_TIERS['STRONG']['models']),  # 7 models
+    'BALANCED': (MODEL_TIERS['ELITE']['models'] + 
+                 MODEL_TIERS['STRONG']['models'] + 
+                 MODEL_TIERS['DECENT']['models']),  # 13 models (includes REB/AST)
+    'AGGRESSIVE': (MODEL_TIERS['ELITE']['models'] + 
+                   MODEL_TIERS['STRONG']['models'] + 
+                   MODEL_TIERS['DECENT']['models'] +
+                   MODEL_TIERS['RISKY']['models']),  # 15 models (adds STL/TOV)
+    'ALL': list(MODEL_QUALITY.keys())  # All 17 models (includes BLK/SB)
+}
+
+# Build active targets based on mode
+ACTIVE_TARGETS = SCANNING_MODES.get(SCANNING_MODE, SCANNING_MODES['BALANCED'])
+
+# Print mode info
+mode_descriptions = {
+    'ELITE_ONLY': "⭐ ELITE ONLY - 5 models (85%+), max accuracy",
+    'SAFE': "✓ SAFE MODE - 7 models (80%+), high confidence",
+    'BALANCED': "📊 BALANCED - 13 models (72%+), includes REB/AST",
+    'AGGRESSIVE': "⚡ AGGRESSIVE - 15 models (61%+), includes STL/TOV", 
+    'ALL': "🎲 ALL MODELS - 17 models (includes BLK/SB)"
+}
+
+print(f"⚙️  {mode_descriptions.get(SCANNING_MODE, 'UNKNOWN MODE')}")
+print(f"   Scanning: {', '.join(ACTIVE_TARGETS)}")
+if SCANNING_MODE == 'BALANCED':
+    print(f"   Excluded: {', '.join(MODEL_TIERS['RISKY']['models'] + MODEL_TIERS['AVOID']['models'])}")
