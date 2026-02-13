@@ -1,5 +1,3 @@
----
-
 # 🏀 NBA Prop Correlation & Projection Engine
 
 ### Technical Audit & Predictive Performance Documentation
