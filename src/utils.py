@@ -1,7 +1,39 @@
-# src/utils.py
+"""
+Simple In-Memory Cache Utility
+
+Lightweight caching for API responses without external dependencies.
+
+Usage:
+    from src.utils import SimpleCache
+    cache = SimpleCache(duration=300)  # 5 minutes
+    
+    # Store
+    cache.set('player_123', player_data)
+    
+    # Retrieve
+    data = cache.get('player_123')  # Returns data if <5 mins old, else None
+"""
+
+
 import time
 
 class SimpleCache:
+    """
+    Time-based in-memory cache.
+    
+    Attributes:
+        cache (dict): Storage {key: (timestamp, data)}
+        duration (int): Seconds until expiration
+        
+    Methods:
+        get(key): Retrieve if not expired
+        set(key, data): Store with current timestamp
+        
+    Note:
+        Cache is NOT persistent (resets when program ends)
+        Not thread-safe (fine for single-threaded use)
+    """
+
     def __init__(self, duration=300):
         self.cache = {}
         self.duration = duration # 5 minutes default
