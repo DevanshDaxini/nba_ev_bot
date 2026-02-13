@@ -165,3 +165,4 @@ if __name__ == "__main__":
     # Debug check
     for p, stats in list(lines.items())[:2]:
         print(f"{p}: {stats}")
+        
