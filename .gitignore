@@ -3,8 +3,7 @@ __pycache__/
 *.pyc
 venv/
 .DS_Store
-program_runs/
-data/
 fanduel_cache/
 models/
 csvFiles/
+data/training_dataset.csv
