@@ -1,4 +1,30 @@
-# src/config.py
+"""
+Configuration Constants and API Keys
+
+Central configuration file for the NBA props betting system.
+Stores API keys, sport mappings, stat name conversions, and 
+PrizePicks breakeven rates.
+
+Key Constants:
+    ODDS_API_KEY - The Odds API key (loaded from .env file)
+    SPORT_MAP - Maps league names to API sport keys
+    STAT_MAP - Converts display names ('Points') to abbreviations ('PTS')
+    SLIP_CONFIG - PrizePicks breakeven win rates by parlay type
+    
+Environment Variables:
+    .env file must contain: ODDS_API_KEY=your_key_here
+    
+SLIP_CONFIG Explanation:
+    Each parlay type has a 'hurdle' (required win rate to break even)
+    Example: 5_man_flex requires 54.25% to be profitable
+    
+    Higher hurdle = higher payout but need more confident picks
+    Lower hurdle = safer but lower payout
+    
+Usage:
+    from src.config import STAT_MAP, SLIP_CONFIG
+"""
+
 import os
 from dotenv import load_dotenv
 
@@ -83,12 +109,21 @@ SLIP_CONFIG = {
 
 
 STAT_MAP = {
-    'player_points': 'Points',
-    'player_rebounds': 'Rebounds',
-    'player_assists': 'Assists',
-    'player_threes': '3-PT Made',
-    'player_points_rebounds_assists': 'Pts+Rebs+Asts',
-    'player_blocks': 'Blocks',
-    'player_steals': 'Steals',
-    'player_turnovers': 'Turnovers'
+    'Points': 'PTS',
+    'Rebounds': 'REB',
+    'Assists': 'AST',
+    '3-PT Made': 'FG3M',
+    '3-PT Attempted': 'FG3A',
+    'Blocked Shots': 'BLK',
+    'Steals': 'STL',
+    'Turnovers': 'TOV',
+    'FG Made': 'FGM',
+    'FG Attempted': 'FGA',
+    'Free Throws Made': 'FTM',
+    'Free Throws Attempted': 'FTA',
+    'Pts+Rebs+Asts': 'PRA',
+    'Pts+Rebs': 'PR',
+    'Pts+Asts': 'PA',
+    'Rebs+Asts': 'RA',
+    'Blks+Stls': 'SB'
 }
