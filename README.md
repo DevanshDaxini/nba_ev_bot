@@ -1,4 +1,4 @@
-# 🏀 NBA Prop Correlation & Projection Engine
+# 🏀 Basketball Prop Correlation & Projection Engine
 
 ### Technical Audit & Predictive Performance Documentation
 
@@ -64,17 +64,56 @@ Instead of general defensive rankings, the bot utilizes **OPP_ALLOWED** stats fi
 ## 📂 Project Structure
 
 ```text
-├── main.py                 # Primary CLI menu
-├── visualizer.py           # Automated charting (Accuracy & Trends)
+sports_ev_bot/
+├── main.py
+├── .env
+├── .gitignore
+├── requirements.txt
 ├── src/
-│   ├── train.py            # XGBoost training with metrics logging
-│   ├── scanner.py          # Real-time market/AI correlation engine
-│   ├── features.py         # 80+ feature engineering signals
-│   ├── injuries.py         # Real-time injury report integration
-│   └── config.py           # Stat maps and API keys
-├── analysis_plots/         # NEW: Root-level folder for PNG reports
-├── models/                 # Saved models and model_metrics.csv
-└── program_runs/           # Historical performance logs (win_rate_history.csv)
+│   ├── __init__.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── config.py
+│   │   ├── utils.py
+│   │   ├── visualizer.py
+│   │   ├── odds_providers/
+│   │   │   ├── __init__.py
+│   │   │   ├── fanduel.py
+│   │   │   └── prizepicks.py
+│   │   └── analyzers/
+│   │       ├── __init__.py
+│   │       └── analyzer.py
+│   ├── sports/
+│   │   ├── __init__.py
+│   │   ├── nba/
+│   │   │   ├── __init__.py
+│   │   │   ├── config.py
+│   │   │   ├── mappings.py
+│   │   │   ├── builder.py
+│   │   │   ├── features.py
+│   │   │   ├── scanner.py
+│   │   │   ├── train.py
+│   │   │   ├── tune_train.py
+│   │   │   ├── injuries.py
+│   │   │   ├── grader.py
+│   │   │   └── check_features.py
+│   │   └── cbb/
+│   │       ├── __init__.py
+│   │       └── config.py
+│   └── cli/
+│       ├── __init__.py
+│       └── nba_cli.py
+├── data/
+│   └── nba/
+│       ├── raw/
+│       ├── processed/
+│       └── projections/
+├── models/
+│   └── nba/
+└── output/
+    └── nba/
+        ├── scans/
+        └── analysis_plots/
 
 ```
 
