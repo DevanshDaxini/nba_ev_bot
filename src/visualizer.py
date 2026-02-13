@@ -1,3 +1,23 @@
+"""
+Model Performance Visualizations
+
+Creates charts showing:
+    1. Feature Importance - Which features models rely on most
+    2. Win Rate Trend - Accuracy over time vs breakeven rate
+    
+Output Files:
+    feature_importance.png - Horizontal bar chart
+    win_rate_trend.png - Line chart with breakeven threshold
+    
+Usage:
+    $ python3 -m src.visualizer
+    
+Requirements:
+    - matplotlib
+    - Trained models in models/ folder
+    - win_rate_history.csv (from grader.py)
+"""
+
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
@@ -5,7 +25,29 @@ import xgboost as xgb
 import matplotlib.ticker as mtick
 
 def plot_feature_importance():
-    """Visualizes which stats are weighting the model most."""
+    """
+    Visualize which features PTS model uses most.
+    
+    Loads:
+        models/PTS_model.json
+        
+    Generates:
+        Horizontal bar chart showing top features by F-score
+        (F-score = number of times feature was used for splits)
+        
+    Example Output:
+        PTS_L5         ████████████ 450
+        PTS_Season     ██████████ 380
+        MISSING_USAGE  ████████ 290
+        OPP_PTS_ALLOWED ████ 180
+        
+    Note:
+        If new features (GAMES_7D, PACE_ROLLING) aren't showing,
+        they weren't important for predictions (model ignored them)
+        
+    Saves:
+        feature_importance.png in current directory
+    """
     
     # CORRECTED: Point explicitly to the .json file
     model_path = 'models/PTS_model.json'
@@ -33,7 +75,34 @@ def plot_feature_importance():
     print("✅ Saved: feature_importance.png")
 
 def plot_win_rate():
-    """Visualizes accuracy with bulletproof data cleaning."""
+    """
+    Plot accuracy trend vs PrizePicks breakeven rate.
+    
+    Loads:
+        program_runs/win_rate_history.csv
+        
+    Generates:
+        Line chart with:
+            - Green line: Your win rate over time
+            - Red dashed line: 54.1% breakeven (5-man flex)
+            - Y-axis: 40% to 60% (zoomed for clarity)
+            
+    Data Cleaning:
+        - Handles "50%", "0.5", and "50.00" formats
+        - Removes duplicate header rows if present
+        - Auto-scales decimal (0.5) to percentage (50.0)
+        
+    Example Output:
+        [Chart showing win rate fluctuating 52-58% over 10 days]
+        
+    Interpretation:
+        Above red line = Profitable
+        Below red line = Losing money
+        
+    Saves:
+        win_rate_trend.png in current directory
+    """
+    
     history_file = "program_runs/win_rate_history.csv"
     if not os.path.exists(history_file):
         print("⚠️ No history file found yet.")
