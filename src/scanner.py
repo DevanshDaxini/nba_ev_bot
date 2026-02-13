@@ -43,7 +43,7 @@ import time
 from datetime import datetime, timedelta
 from nba_api.stats.endpoints import ScoreboardV2, LeagueGameLog
 from prizepicks import fetch_current_lines_dict
-from config import STAT_MAP 
+from config import STAT_MAP, MODEL_QUALITY, ACTIVE_TARGETS
 from injuries import get_injury_report
 
 # --- CONFIGURATION ---
@@ -83,7 +83,7 @@ def get_player_status(name):
             return status
     return "Active"
 
-TARGETS = list(STAT_MAP.values())
+TARGETS = ACTIVE_TARGETS  # Only scan profitable models (excludes BLK, STL, TOV, REB, AST, SB)
 
 # FIX #16: Match train.py FEATURES exactly (with proper 
 # column names from training data)
@@ -530,9 +530,17 @@ def scout_player(df_history, models):
             print("Returning to menu...")
             break
 
-        matches = df_history[df_history['PLAYER_NAME'].str.lower().str.contains(query)]
+        # Search for player
+        try:
+            matches = df_history[df_history['PLAYER_NAME'].str.lower().str.contains(query)]
+        except Exception as e:
+            print(f"❌ Search error: {e}")
+            continue
+            
         if matches.empty:
-            print("❌ Player not found in database.")
+            print(f"❌ No players found matching '{query}'.")
+            print("💡 Tip: Try searching for last name only (e.g., 'james', 'curry')")
+            continue
         else:
             unique_players = matches[['PLAYER_ID', 'PLAYER_NAME']].drop_duplicates()
             if len(unique_players) > 1:
@@ -540,13 +548,32 @@ def scout_player(df_history, models):
                 try:
                     pid = int(input("Enter PLAYER_ID: "))
                     matches = matches[matches['PLAYER_ID'] == pid]
-                except: continue
+                    
+                    # Check if the filtered result is empty
+                    if matches.empty:
+                        print(f"❌ No data found for PLAYER_ID {pid}. Try again.")
+                        continue
+                except ValueError:
+                    print("❌ Invalid PLAYER_ID. Please enter a number.")
+                    continue
+                except:
+                    continue
 
             print("...Fetching live PrizePicks lines")
             live_lines = fetch_current_lines_dict()
             norm_lines = {normalize_name(k): v for k, v in live_lines.items()}
 
-            player_data = matches.sort_values('GAME_DATE').iloc[-1]
+            # Safety check: Make sure we have data
+            if matches.empty:
+                print("❌ No game data found for this player.")
+                continue
+                
+            try:
+                player_data = matches.sort_values('GAME_DATE').iloc[-1]
+            except IndexError:
+                print("❌ No recent games found for this player.")
+                continue
+                
             name = player_data['PLAYER_NAME']
             team_id = player_data['TEAM_ID']
             if team_id not in todays_teams:
@@ -567,13 +594,16 @@ def scout_player(df_history, models):
             
             print(f"\n📊 SCOUTING REPORT: {name}")
             print(f"🚑 Team Injury Impact: {missing_usage_today:.1f}% Missing Usage")
-            print(f"{'MARKET':<8} | {'PROJ':<8} | {'LINE':<8} | {'RECOMMENDATION':<20}")
-            print("-" * 60)
+            print(f"{'TIER':<6} | {'MARKET':<8} | {'PROJ':<8} | {'LINE':<8} | {'RECOMMENDATION':<20}")
+            print("-" * 70)
             
             input_row = prepare_features(player_data, is_home=is_home, missing_usage=missing_usage_today)
             
             for target in TARGETS:
                 if target in models:
+                    # Get tier emoji
+                    tier_emoji = MODEL_QUALITY.get(target, {}).get('emoji', '?')
+                    
                     # FIX #17: Filter features to prevent leakage (same as train.py)
                     model_features = [f for f in models[target].feature_names_in_ if target not in f]
                     valid_input = input_row.reindex(columns=model_features, fill_value=0)
@@ -582,7 +612,7 @@ def scout_player(df_history, models):
                     line = norm_lines.get(normalize_name(name), {}).get(target)
                     indicator = get_betting_indicator(pred, line)
                     line_str = f"{line:.2f}" if line else "N/A"
-                    print(f"{target:<8} : {pred:<8.2f} | {line_str:<8} | {indicator}")
+                    print(f"{tier_emoji:<6} | {target:<8} : {pred:<8.2f} | {line_str:<8} | {indicator}")
         
         if input("\nScout another? (y/n): ").lower() != 'y': scouting = False
 
@@ -706,65 +736,74 @@ def scan_all(df_history, models, is_tomorrow=False):
             for target, proj in player_predictions.items():
                 
                 line = norm_lines.get(normalize_name(player_name), {}).get(target)
+                
+                # Skip if no line available
+                if line is None or line <= 0:
+                    continue
+                    
+                edge = proj - line
                 rec = get_betting_indicator(proj, line)
                 
+                # === ELITE FILTER: Check quality tier and edge threshold ===
+                if target not in MODEL_QUALITY:
+                    continue  # Skip models not in our quality system
+                
+                tier_info = MODEL_QUALITY[target]
+                edge_threshold = tier_info['threshold']
+                
+                # Skip if edge doesn't meet minimum for this tier
+                if abs(edge) < edge_threshold:
+                    continue
+                
+                # Add tier information
+                tier_name = tier_info['tier']
+                quality_emoji = tier_info['emoji']
+                
                 all_projections.append({
-                    'REC': rec, 'NAME': player_name, 'TARGET': target,
-                    'AI': round(proj, 2), 'PP': round(line, 2) if line else 0, 
-                    'EDGE': round(proj - line, 2) if line else 0
+                    'TIER': tier_name,
+                    'QUALITY': quality_emoji,
+                    'REC': rec, 
+                    'NAME': player_name, 
+                    'TARGET': target,
+                    'AI': round(proj, 2), 
+                    'PP': round(line, 2), 
+                    'EDGE': round(edge, 2)
                 })
 
-                if line is not None and line > 0:
-                    edge = proj - line
-                    pct_edge = (edge / line) * 100
-                    
-                    best_bets.append({
-                        'REC': rec, 'NAME': player_name, 'TARGET': target,
-                        'AI': round(proj, 2), 'PP': round(line, 2), 
-                        'EDGE': edge, 'PCT_EDGE': pct_edge
-                    })
+                pct_edge = (edge / line) * 100
+                
+                best_bets.append({
+                    'TIER': tier_name,
+                    'QUALITY': quality_emoji,
+                    'REC': rec, 
+                    'NAME': player_name, 
+                    'TARGET': target,
+                    'AI': round(proj, 2), 
+                    'PP': round(line, 2), 
+                    'EDGE': edge, 
+                    'PCT_EDGE': pct_edge
+                })
             
     if best_bets:
-        # FIX #19: Filter bets by model quality (only show predictions from reliable models)
-        # Tier 1: Elite models (>85% directional accuracy)
-        elite_models = {'PTS', 'FGM', 'PA', 'PR', 'PRA'}
-        # Tier 2: Strong models (80-85%)
-        strong_models = {'FG3A', 'FGA'}
-        # Tier 3: Decent models (75-80%)
-        decent_models = {'FG3M', 'FTA'}
+        # Sort by tier first (ELITE > STRONG > DECENT > RISKY > AVOID), then by edge %
+        tier_order = {'ELITE': 0, 'STRONG': 1, 'DECENT': 2, 'RISKY': 3, 'AVOID': 4}
+        best_bets.sort(key=lambda x: (tier_order.get(x['TIER'], 99), -abs(x['PCT_EDGE'])))
         
-        # Mark bet quality
-        for bet in best_bets:
-            if bet['TARGET'] in elite_models:
-                bet['TIER'] = '⭐ ELITE'
-                bet['CONFIDENCE'] = 'HIGH'
-            elif bet['TARGET'] in strong_models:
-                bet['TIER'] = '✓ STRONG'
-                bet['CONFIDENCE'] = 'MEDIUM'
-            elif bet['TARGET'] in decent_models:
-                bet['TIER'] = '~ DECENT'
-                bet['CONFIDENCE'] = 'LOW'
-            else:
-                bet['TIER'] = '⚠ WEAK'
-                bet['CONFIDENCE'] = 'AVOID'
+        # Separate by direction
+        top_overs = [b for b in best_bets if b['EDGE'] > 0][:10]
+        top_unders = [b for b in best_bets if b['EDGE'] < 0][:10]
         
-        # Filter out WEAK model bets (optional - can remove this line to see all)
-        quality_bets = [b for b in best_bets if b['CONFIDENCE'] != 'AVOID']
-        
-        top_overs = sorted([b for b in quality_bets if b['EDGE'] > 0], key=lambda x: x['PCT_EDGE'], reverse=True)[:10]
-        top_unders = sorted([b for b in quality_bets if b['EDGE'] < 0], key=lambda x: x['PCT_EDGE'])[:10]
-        
-        print("\n🔥 TOP 10 OVERS (Highest Value)")
+        print("\n🔥 TOP 10 OVERS (Sorted by Quality, then Edge %)")
         print(f" {'TIER':<12} | {'PLAYER':<20} | {'STAT':<5} | {'AI vs PP':<15} | {'EDGE %':<8}")
         print("-" * 85)
         for bet in top_overs:
-            print(f" {bet['TIER']:<12} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f} | {bet['PCT_EDGE']:>6.1f}%")
+            print(f" {bet['QUALITY']:<12} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f} | {bet['PCT_EDGE']:>6.1f}%")
         
-        print("\n❄️ TOP 10 UNDERS (Lowest Value)")
+        print("\n❄️ TOP 10 UNDERS (Sorted by Quality, then Edge %)")
         print(f" {'TIER':<12} | {'PLAYER':<20} | {'STAT':<5} | {'AI vs PP':<15} | {'EDGE %':<8}")
         print("-" * 85)
         for bet in top_unders:
-            print(f" {bet['TIER']:<12} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f} | {bet['PCT_EDGE']:>6.1f}%")
+            print(f" {bet['QUALITY']:<12} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f} | {bet['PCT_EDGE']:>6.1f}%")
         
         save_path = TOMORROW_SCAN_FILE if is_tomorrow else TODAY_SCAN_FILE
         pd.DataFrame(all_projections).to_csv(save_path, index=False)
