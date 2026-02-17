@@ -1,7 +1,7 @@
 """
 Props Edge Analyzer - FanDuel vs PrizePicks Comparison
 
-✅ NOW WITH LINE-ADJUSTED WIN% CALCULATION!
+NOW WITH LINE-ADJUSTED WIN% CALCULATION!
 
 Calculates "true probability" by removing bookmaker vig from FanDuel odds,
 THEN adjusts for PrizePicks line differences to show YOUR actual win rate.
@@ -9,7 +9,7 @@ THEN adjusts for PrizePicks line differences to show YOUR actual win rate.
 Mathematical Approach:
     1. Convert FanDuel Over/Under odds to implied probabilities
     2. Remove vig: true_prob = implied_prob / (sum of both sides)
-    3. ✅ NEW: Adjust probability based on PP vs FD line difference
+    3. Adjust probability based on PP vs FD line difference
     4. Return opportunities with ADJUSTED win rates
     
 Example (NEW):
@@ -24,11 +24,11 @@ Example (NEW):
         market_total = 54.5% + 50.0% = 104.5% (vig = 4.5%)
         true_over = 54.5% / 104.5% = 52.2%
         
-    Step 3: ✅ Adjust for line difference
+    Step 3: Adjust for line difference
         Line diff = 25.5 - 26.5 = -1.0 (PP is 1 point easier)
         For OVER: easier line = higher win probability
         Adjustment = +3.5% per point for PTS
-        Adjusted WIN% = 52.2% + 3.5% = 55.7% ✅
+        Adjusted WIN% = 52.2% + 3.5% = 55.7%
         
 Usage:
     from src.core.analyzers.analyzer import PropsAnalyzer
