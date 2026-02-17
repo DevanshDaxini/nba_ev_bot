@@ -16,29 +16,22 @@ import pandas as pd
 import warnings
 from datetime import datetime
 
-# --- IMPORTS: Core shared tools ---
 from src.core.odds_providers.prizepicks import PrizePicksClient
 from src.core.odds_providers.fanduel    import FanDuelClient
 from src.core.analyzers.analyzer        import PropsAnalyzer
-
-# --- IMPORTS: NBA-specific config and mappings ---
 from src.sports.nba.config import (
     ODDS_API_KEY, SPORT_MAP, REGIONS, ODDS_FORMAT, STAT_MAP,
     MODEL_QUALITY, ACTIVE_TARGETS
 )
 from src.sports.nba.mappings import PP_NORMALIZATION_MAP, STAT_MAPPING, VOLATILITY_MAP
-
-# --- IMPORTS: NBA scanner (load_data, load_models, get_games, etc.) ---
 import src.sports.nba.scanner as ai_scanner_module
 from src.sports.nba.scanner import load_data, load_models, get_games, prepare_features, normalize_name
 
 warnings.filterwarnings('ignore')
 
-# Output directory for scan results
-OUTPUT_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    'output', 'nba', 'scans'
-)
+# Project root is 3 levels up from src/cli/nba_cli.py
+_BASE      = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+OUTPUT_DIR = os.path.join(_BASE, 'output', 'nba', 'scans')
 
 
 # --- HELPER: RUN AI PREDICTIONS ---
@@ -50,9 +43,28 @@ def get_ai_predictions():
     if df_history is None or not models:
         return pd.DataFrame()
 
-    todays_teams    = get_games(date_offset=0, require_scheduled=True)
-    tomorrows_teams = get_games(date_offset=1, require_scheduled=True)
-    all_teams       = {**todays_teams, **tomorrows_teams}
+    # --- Fetch game schedule ---
+    # get_games() searches forward when a date has no games, so offset=0 and
+    # offset=1 often both resolve to the same future date (e.g. next Thursday).
+    # When that happens we skip the second call entirely to avoid printing the
+    # same "Found N games on …" block twice.
+    first_teams, first_date = get_games(date_offset=0, require_scheduled=True)
+
+    all_teams = dict(first_teams) if first_teams else {}
+
+    # Only make the second call if the first result was actually today
+    # (meaning tomorrow might have different games).  If offset=0 already
+    # jumped forward, offset=1 will land on the same date — skip it.
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    if first_date != today_str:
+        # first_date is already a future date; offset=1 would find the same slate
+        pass
+    else:
+        second_teams, second_date = get_games(date_offset=1, require_scheduled=True)
+        if second_teams and second_date != first_date:
+            for team_id, info in second_teams.items():
+                if team_id not in all_teams:
+                    all_teams[team_id] = info
 
     if not all_teams:
         return pd.DataFrame()
@@ -91,19 +103,35 @@ def run_correlated_scanner():
     # 1. Fetch market odds
     print("\n--- 1. Fetching Market Odds (FanDuel vs PrizePicks) ---")
     try:
-        pp     = PrizePicksClient(stat_map=STAT_MAP)
-        pp_df  = pp.fetch_board(league_filter='NBA')
-        if not pp_df.empty:
-            pp_df['Stat'] = pp_df['Stat'].replace(PP_NORMALIZATION_MAP)
+        import time
 
+        # --- PrizePicks: retry up to 3 times (403s are usually temporary rate limits) ---
+        pp    = PrizePicksClient(stat_map=STAT_MAP)
+        pp_df = pd.DataFrame()
+        for attempt in range(1, 4):
+            pp_df = pp.fetch_board(league_filter='NBA')
+            if not pp_df.empty:
+                break
+            if attempt < 3:
+                print(f"   ⏳ PrizePicks attempt {attempt}/3 failed. Retrying in 10s...")
+                time.sleep(10)
+
+        if pp_df.empty:
+            print("❌ PrizePicks unavailable after 3 attempts. Cannot run correlation.")
+            input("Press Enter...")
+            return
+
+        pp_df['Stat'] = pp_df['Stat'].replace(PP_NORMALIZATION_MAP)
+
+        # --- FanDuel ---
         fd    = FanDuelClient(
             api_key=ODDS_API_KEY, sport_map=SPORT_MAP,
             regions=REGIONS, odds_format=ODDS_FORMAT, stat_map=STAT_MAP
         )
         fd_df = fd.get_all_odds()
 
-        if pp_df.empty or fd_df.empty:
-            print("❌ Error: Missing market data. Cannot run correlation.")
+        if fd_df.empty:
+            print("❌ FanDuel data unavailable. Cannot run correlation.")
             input("Press Enter...")
             return
 
@@ -142,6 +170,15 @@ def run_correlated_scanner():
     ai_df['CleanName']     = ai_df['Player'].apply(normalize_name)
 
     merged = pd.merge(math_bets, ai_df, on=['CleanName', 'Stat'], how='inner')
+    
+    before = len(merged)
+    merged = merged.drop_duplicates(
+        subset=['CleanName', 'Stat', 'Line', 'Side'],
+        keep='first'
+    )
+    if before > len(merged):
+        print(f"   🧹 Removed {before - len(merged)} duplicate entries")
+
     correlated_plays = []
 
     for _, row in merged.iterrows():
@@ -173,20 +210,103 @@ def run_correlated_scanner():
     if not correlated_plays:
         print("❌ No correlated plays found.")
     else:
+        import unicodedata
+
+        def vw(s):
+            """Visual (terminal) width — wide chars like ⭐ count as 2."""
+            return sum(2 if unicodedata.east_asian_width(c) in ('W', 'F') else 1 for c in str(s))
+
+        def pad(s, width, align='left'):
+            """Pad to visual width so emoji-containing cells stay aligned."""
+            s = str(s)
+            spaces = max(0, width - vw(s))
+            return (' ' * spaces + s) if align == 'right' else (s + ' ' * spaces)
+
+        # Column widths
+        W_RANK=3; W_TIER=4; W_PLAYER=24; W_STAT=5; W_LINE=6
+        W_SIDE=8; W_WIN=7; W_AI=7; W_SCORE=6
+        SEP = " │ "
+        total_w = W_RANK+W_TIER+W_PLAYER+W_STAT+W_LINE+W_SIDE+W_WIN+W_AI+W_SCORE + len(SEP)*8
+
+        def print_table(df, title, limit=None):
+            """Print a formatted table of correlated plays."""
+            rows = df.head(limit) if limit else df
+            if rows.empty:
+                return
+            print(f"\n{'─'*total_w}")
+            print(f"  {title}")
+            print(f"{'─'*total_w}")
+            header = (
+                pad('#',       W_RANK,  'right') + SEP +
+                pad('TIER',    W_TIER)            + SEP +
+                pad('PLAYER',  W_PLAYER)           + SEP +
+                pad('STAT',    W_STAT)             + SEP +
+                pad('LINE',    W_LINE,  'right')   + SEP +
+                pad('SIDE',    W_SIDE)             + SEP +
+                pad('WIN %',   W_WIN,   'right')   + SEP +
+                pad('AI PROJ', W_AI,    'right')   + SEP +
+                pad('SCORE',   W_SCORE, 'right')
+            )
+            print(header)
+            print(f"{'─'*total_w}")
+            for i, row in rows.reset_index(drop=True).iterrows():
+                tier   = str(row['Tier'])
+                player = str(row['Player'])
+                while vw(player) > W_PLAYER:
+                    player = player[:-1]
+                side      = str(row['Side'])
+                side_cell = f"{'▲' if side == 'Over' else '▼'} {side}"
+                print(
+                    pad(str(i+1),                    W_RANK,  'right') + SEP +
+                    pad(tier,                         W_TIER)           + SEP +
+                    pad(player,                       W_PLAYER)         + SEP +
+                    pad(str(row['Stat']),             W_STAT)           + SEP +
+                    pad(f"{float(row['Line']):.1f}",  W_LINE,  'right') + SEP +
+                    pad(side_cell,                    W_SIDE)           + SEP +
+                    pad(f"{float(row['Win%']):.2f}%", W_WIN,   'right') + SEP +
+                    pad(f"{float(row['AI_Proj']):.2f}",W_AI,   'right') + SEP +
+                    pad(f"{float(row['Score']):.1f}", W_SCORE, 'right')
+                )
+            print(f"{'─'*total_w}")
+
+        # ── Build the full sorted frame ────────────────────────────────────
         final_df = pd.DataFrame(correlated_plays)
-        final_df = final_df.sort_values(by='Score', ascending=False).head(20)
+        final_df = final_df.sort_values(by='Score', ascending=False)
+        final_df = final_df.drop_duplicates(subset=['Player', 'Stat', 'Line', 'Side'], keep='first')
+        final_df['Tier'] = final_df['Tier'].replace({'?': '–', '~': '–'})
 
-        print("\n💎 TOP 20 CORRELATED PLAYS (Math + AI Confidence)")
-        print(f"{'TIER':<6} | {'PLAYER':<18} | {'STAT':<5} | {'LINE':<5} | {'SIDE':<5} | {'WIN%':<6} | {'AI PROJ':<7} | SCORE")
-        print("-" * 85)
+        # ── Main table: overall top 20 ─────────────────────────────────────
+        print_table(final_df, "💎  TOP 20 CORRELATED PLAYS  —  Math + AI Confidence", limit=20)
 
-        for _, row in final_df.iterrows():
-            print(f"{row['Tier']:<6} | {row['Player']:<18} | {row['Stat']:<5} | {row['Line']:<5} | {row['Side']:<5} | {row['Win%']:<5}% | {row['AI_Proj']:<7} | {row['Score']}")
+        # ── Bonus sections: best play(s) for every market NOT in the top 20 ─
+        top20_stats = set(final_df.head(20)['Stat'].unique())
+        all_stats   = set(final_df['Stat'].unique())
+        missing_stats = all_stats - top20_stats
 
+        # Friendly display names for stat codes
+        STAT_LABELS = {
+            'PTS': 'Points', 'REB': 'Rebounds', 'AST': 'Assists',
+            'PRA': 'Pts+Rebs+Asts', 'PR': 'Pts+Rebs', 'PA': 'Pts+Asts',
+            'RA': 'Rebs+Asts', 'FG3M': '3-Pt Made',
+            'BLK': 'Blocks', 'STL': 'Steals', 'SB': 'Blks+Stls',
+            'TOV': 'Turnovers', 'FGM': 'FG Made', 'FGA': 'FG Attempted',
+            'FTM': 'Free Throws Made', 'FTA': 'Free Throws Attempted',
+        }
+
+        if missing_stats:
+            print(f"\n  📊  BEST PLAYS BY MARKET  —  markets not in top 20")
+            for stat in sorted(missing_stats):
+                stat_df = final_df[final_df['Stat'] == stat]
+                if stat_df.empty:
+                    continue
+                label = STAT_LABELS.get(stat, stat)
+                print_table(stat_df, f"  {label} ({stat})  —  Top 3", limit=3)
+
+        # ── Save ───────────────────────────────────────────────────────────
         os.makedirs(OUTPUT_DIR, exist_ok=True)
         path = os.path.join(OUTPUT_DIR, 'correlated_plays.csv')
         final_df.to_csv(path, index=False)
-        print(f"\n💾 Saved list to {path}")
+        print(f"\n💾 Saved to {path}")
 
     input("\nPress Enter to return to menu...")
 
