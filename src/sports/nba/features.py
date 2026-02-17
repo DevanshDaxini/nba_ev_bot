@@ -317,41 +317,203 @@ def add_turnover_specific_features(df):
 
 
 def add_rebound_specific_features(df):
-    print("...Adding Rebound-Specific Features")
+    """
+    ENHANCED: Advanced rebounding features to improve REB model from 72% → 78%+
+    
+    Why REB is currently weak (72%):
+      - Missing opponent shot volume context
+      - No height/position matchup analysis  
+      - Ignores teammate rebounding competition
+      
+    New features fix all three issues.
+    """
+    print("...Adding Rebound-Specific Features (Enhanced)")
     df = df.copy()
+    
+    # ===== EXISTING FEATURES (Keep these) =====
     df['TEAM_OREB_EMPHASIS'] = df.groupby(['TEAM_ID', 'SEASON_ID']).apply(
         lambda x: x['OREB'].shift(1).rolling(10, min_periods=5).sum() /
                   (x['FGA'].shift(1).rolling(10, min_periods=5).sum() + 0.1)
     ).reset_index(level=[0, 1], drop=True).fillna(0.25)
+    
     df['OPP_REB_WEAKNESS'] = df.groupby(['OPPONENT', 'SEASON_ID']).apply(
         lambda x: (x['OREB'] + x['DREB']).shift(1).rolling(10, min_periods=5).mean()
     ).reset_index(level=[0, 1], drop=True)
-    df['OPP_REB_WEAKNESS']    = df['OPP_REB_WEAKNESS'].fillna(df.groupby('SEASON_ID')['REB'].transform('median'))
+    df['OPP_REB_WEAKNESS'] = df['OPP_REB_WEAKNESS'].fillna(df.groupby('SEASON_ID')['REB'].transform('median'))
+    
     df['MISSED_SHOTS_PROXY']  = df['FGA'] - df['FGM']
     df['REBOUND_OPPORTUNITY'] = df.groupby(['GAME_ID', 'TEAM_ID'])['MISSED_SHOTS_PROXY'].transform('sum')
     df['POSITION_REB_BASELINE'] = df.groupby(['POSITION', 'SEASON_ID'])['REB'].transform('median')
+    
+    # ===== NEW CRITICAL FEATURES =====
+    
+    # 1. OPPONENT SHOT VOLUME (Most Important!)
+    # More opponent shots = more defensive rebounding opportunities
+    df['OPP_FGA_VOLUME'] = df.groupby(['OPPONENT', 'SEASON_ID'])['FGA'].transform(
+        lambda x: x.shift(1).rolling(10, min_periods=5).mean()
+    ).fillna(df['FGA'].median())
+    
+    # Opponent 3PT rate affects rebound distance (long rebounds harder to predict)
+    df['OPP_3PT_RATE'] = df.groupby(['OPPONENT', 'SEASON_ID']).apply(
+        lambda x: (x['FG3A'] / (x['FGA'] + 0.1)).shift(1).rolling(10, min_periods=5).mean()
+    ).reset_index(level=[0, 1], drop=True).fillna(0.35)
+    
+    # Total rebounding opportunities (team + opponent misses)
+    if 'PACE_ROLLING' in df.columns:
+        # Assume 45% FG% league average = 55% misses
+        df['TOTAL_REB_AVAIL'] = df['PACE_ROLLING'] * 0.55
+    else:
+        df['TOTAL_REB_AVAIL'] = 55  # fallback
+    
+    # 2. HEIGHT/SIZE PROXY (Critical for position matchups)
+    # Centers get more rebounds than guards
+    height_map = {'C': 3.0, 'F-C': 2.5, 'F': 2.0, 'F-G': 1.5, 'G-F': 1.0, 'G': 0.5, 'Unknown': 1.5}
+    df['HEIGHT_ADVANTAGE'] = df['POSITION'].map(height_map).fillna(1.5)
+    
+    # 3. TEAMMATE REBOUNDING COMPETITION
+    # If you have Rudy Gobert on your team, your rebounds go down
+    if 'REB_Season' in df.columns:
+        # Find teammate with highest rebounding rate
+        df['TEAMMATE_MAX_REB'] = df.groupby(['GAME_ID', 'TEAM_ID'])['REB_Season'].transform('max')
+        df['REB_COMPETITION'] = (df['TEAMMATE_MAX_REB'] - df['REB_Season']).clip(lower=0)
+    
+    # Team rebounding concentration (high = one dominant rebounder steals all)
+    team_reb_std = df.groupby(['GAME_ID', 'TEAM_ID'])['REB'].transform('std')
+    df['TEAM_REB_CONCENTRATION'] = team_reb_std.fillna(3.0)
+    
+    # 4. REBOUNDING EFFICIENCY RATES
+    if 'OREB' in df.columns and 'DREB' in df.columns:
+        # Offensive rebound rate (your ORB / team missed shots)
+        team_missed = df.groupby(['GAME_ID', 'TEAM_ID'])['MISSED_SHOTS_PROXY'].transform('sum')
+        df['ORB_RATE'] = df['OREB'] / (team_missed + 0.1)
+        
+        # Defensive rebound rate (your DRB / opponent shots)
+        df['DRB_RATE'] = df['DREB'] / (df['OPP_FGA_VOLUME'] + 0.1)
+        
+        # Rolling averages
+        df['ORB_RATE_L10'] = df.groupby('PLAYER_ID')['ORB_RATE'].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=5).mean()
+        ).fillna(0.1)
+        
+        df['DRB_RATE_L10'] = df.groupby('PLAYER_ID')['DRB_RATE'].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=5).mean()
+        ).fillna(0.15)
+    
+    # 5. PACE-ADJUSTED REBOUNDING
+    if 'PACE_ROLLING' in df.columns and 'REB_Season' in df.columns:
+        df['REB_PER_100'] = (df['REB_Season'] / (df['PACE_ROLLING'] + 0.1)) * 100
+    
+    # 6. FOUL TROUBLE PENALTY
+    # Players in foul trouble play less aggressive defense = fewer rebounds
+    if 'PF' in df.columns:
+        df['FOUL_TROUBLE_REB_LOSS'] = ((df['PF'] >= 4).astype(int)) * -2.5
+    
+    # 7. SMALL BALL VS BIG LINEUPS
+    # Opponent playing small = more rebounds available
+    opp_avg_height = df.groupby(['OPPONENT', 'SEASON_ID'])['HEIGHT_ADVANTAGE'].transform('median')
+    df['OPP_SIZE_MATCHUP'] = df['HEIGHT_ADVANTAGE'] - opp_avg_height.fillna(1.5)
+    
     return df
 
 
 def add_assist_specific_features(df):
-    print("...Adding Assist-Specific Features")
+    """
+    ENHANCED: Advanced assist features to improve AST model from 72% → 78%+
+    
+    Why AST is currently weak (72%):
+      - Assists depend on TEAMMATES making shots (not just you passing)
+      - Missing pace/offensive flow context
+      - No playmaking role detection
+      
+    New features capture the "assist ecosystem".
+    """
+    print("...Adding Assist-Specific Features (Enhanced)")
     df = df.copy()
+    
+    # ===== EXISTING FEATURES (Keep these) =====
     team_fgm = df.groupby(['GAME_ID', 'TEAM_ID'])['FGM'].transform('sum')
     team_fga = df.groupby(['GAME_ID', 'TEAM_ID'])['FGA'].transform('sum')
-    df['TEAMMATE_FGM']    = team_fgm - df['FGM']
-    df['TEAMMATE_FGA']    = team_fga - df['FGA']
+    df['TEAMMATE_FGM'] = team_fgm - df['FGM']
+    df['TEAMMATE_FGA'] = team_fga - df['FGA']
     df['TEAMMATE_FG_PCT'] = df['TEAMMATE_FGM'] / (df['TEAMMATE_FGA'] + 0.1)
+    
     df['TEAMMATE_SHOOTING_L10'] = df.groupby(['PLAYER_ID', 'SEASON_ID'])['TEAMMATE_FG_PCT'].transform(
-        lambda x: x.shift(1).rolling(10, min_periods=3).mean()).fillna(0.45)
+        lambda x: x.shift(1).rolling(10, min_periods=3).mean()
+    ).fillna(0.45)
+    
     if 'USAGE_RATE_Season' in df.columns and 'PTS_Season' in df.columns:
         df['PLAYMAKER_ROLE'] = (df['USAGE_RATE_Season'] / (df['PTS_Season'] + 0.1)).fillna(0).clip(upper=2.0)
     else:
         df['PLAYMAKER_ROLE'] = 0
+    
     if 'PACE_ROLLING' in df.columns and 'USAGE_RATE_Season' in df.columns:
         df['ASSIST_OPPORTUNITY'] = (df['PACE_ROLLING'] / 100) * (df['USAGE_RATE_Season'] / 20)
     else:
         df['ASSIST_OPPORTUNITY'] = 1.0
+    
     df['POSITION_AST_BASELINE'] = df.groupby(['POSITION', 'SEASON_ID'])['AST'].transform('median')
+    
+    # ===== NEW CRITICAL FEATURES =====
+    
+    # 1. TEAM SHOOTING ABILITY (Most Critical!)
+    # Can only get assists if teammates MAKE shots
+    df['TEAM_FG_PCT_ROLLING'] = df.groupby(['TEAM_ID', 'SEASON_ID'])['TEAMMATE_FG_PCT'].transform(
+        lambda x: x.shift(1).rolling(10, min_periods=5).mean()
+    ).fillna(0.45)
+    
+    # 2. PLAYMAKING RATE
+    # Assists per usage (ball-dominant playmakers)
+    df['AST_RATE'] = df['AST'] / (df['FGA'] + df['FTA'] * 0.44 + 0.1)
+    df['AST_RATE_L10'] = df.groupby('PLAYER_ID')['AST_RATE'].transform(
+        lambda x: x.shift(1).rolling(10, min_periods=5).mean()
+    ).fillna(0.15)
+    
+    # 3. PACE-ADJUSTED ASSISTS
+    # More possessions = more assist opportunities
+    if 'PACE_ROLLING' in df.columns:
+        df['AST_PER_100'] = (df['AST'] / (df['PACE_ROLLING'] + 0.1)) * 100
+        
+        # Opportunity factor = pace × teammate shooting
+        df['AST_OPPORTUNITY_SCORE'] = df['PACE_ROLLING'] * df['TEAM_FG_PCT_ROLLING']
+    else:
+        df['AST_OPPORTUNITY_SCORE'] = 45
+    
+    # 4. PLAYMAKER POSITION FACTOR
+    # Guards assist way more than centers
+    playmaker_map = {'G': 2.0, 'G-F': 1.5, 'F-G': 1.2, 'F': 0.9, 'F-C': 0.6, 'C': 0.4, 'Unknown': 1.0}
+    df['PLAYMAKER_POSITION'] = df['POSITION'].map(playmaker_map).fillna(1.0)
+    
+    # 5. TEAMMATE ALPHA USAGE
+    # If LeBron is on your team, he takes all the assists
+    if 'USAGE_RATE' in df.columns:
+        teammate_max_usage = df.groupby(['GAME_ID', 'TEAM_ID'])['USAGE_RATE'].transform('max')
+        df['ALPHA_TEAMMATE_USAGE'] = (teammate_max_usage - df['USAGE_RATE']).clip(lower=0)
+    
+    # 6. ASSIST CONSISTENCY (Skill vs Luck)
+    # Low variance = reliable playmaker
+    df['AST_VOLATILITY'] = df.groupby('PLAYER_ID')['AST'].transform(
+        lambda x: x.shift(1).rolling(15, min_periods=10).std()
+    ).fillna(2.0)
+    
+    df['AST_CONSISTENCY'] = 1.0 / (df['AST_VOLATILITY'] + 0.1)
+    
+    # 7. OPPONENT DEFENSIVE PRESSURE
+    # Teams that force turnovers = fewer assists allowed
+    df['OPP_DEF_PRESSURE'] = df.groupby(['OPPONENT', 'SEASON_ID'])['TOV'].transform(
+        lambda x: x.shift(1).rolling(10, min_periods=5).mean()
+    ).fillna(df['TOV'].median())
+    
+    # Defense affects assist rate
+    df['AST_VS_PRESSURE'] = df['AST_RATE_L10'] / (df['OPP_DEF_PRESSURE'] / 15 + 0.1)
+    
+    # 8. OFF-BALL PLAYMAKING
+    # Some players get assists without high usage (Jokic effect)
+    if 'FGA' in df.columns and 'AST' in df.columns:
+        df['AST_TO_FGA_RATIO'] = df['AST'] / (df['FGA'] + 0.1)
+        df['PURE_PLAYMAKER_SCORE'] = df.groupby('PLAYER_ID')['AST_TO_FGA_RATIO'].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=5).mean()
+        ).fillna(0.5)
+    
     return df
 
 
@@ -382,6 +544,81 @@ def validate_data_quality(df):
             print(f"   ⚠️  WARNING: Max PTS = {max_pts} (seems high)")
     return df
 
+def add_blocks_enhanced_features(df):
+    """
+    ENHANCEMENT: Additional block features (BLK currently 35%!)
+    
+    Why BLK is SO BAD (35%):
+      - Blocks are extremely volatile (high variance)
+      - Depends on opponent's shot selection
+      - Foul trouble limits aggressive defense
+      - Some games have 0 blocks, some have 5
+      
+    Reality: BLK will always be hard. Goal is 45-50%, not 80%.
+    """
+    print("...Enhancing Block Features")
+    df = df.copy()
+    
+    # 1. OPPONENT PAINT ATTACK RATE (Critical!)
+    # Teams that drive to the rim get blocked more
+    df['OPP_PAINT_SHOTS'] = df.groupby(['OPPONENT', 'SEASON_ID']).apply(
+        lambda x: ((x['FGA'] - x['FG3A']) * 0.6).shift(1).rolling(10, min_periods=5).mean()
+    ).reset_index(level=[0, 1], drop=True).fillna(25)
+    
+    # Opponent rim attack rate
+    if 'OPP_FGA_VOLUME' in df.columns:
+        df['OPP_RIM_ATTACK_RATE'] = df['OPP_PAINT_SHOTS'] / (df['OPP_FGA_VOLUME'] + 0.1)
+    else:
+        df['OPP_RIM_ATTACK_RATE'] = 0.4
+    
+    # 2. RIM PROTECTOR ROLE
+    # Centers in drop coverage get more blocks
+    rim_protector_map = {'C': 2.5, 'F-C': 1.8, 'F': 0.8, 'F-G': 0.3, 'G-F': 0.2, 'G': 0.1, 'Unknown': 0.5}
+    df['RIM_PROTECTOR_ROLE'] = df['POSITION'].map(rim_protector_map).fillna(0.5)
+    
+    # 3. FOUL TROUBLE BLOCK PENALTY (Very Important!)
+    # Players in foul trouble can't challenge shots aggressively
+    if 'PF' in df.columns:
+        df['IN_FOUL_DANGER'] = ((df['PF'] >= 3) & (df['PF'] < 5)).astype(int)
+        df['FOULED_OUT_RISK'] = (df['PF'] >= 5).astype(int)
+        
+        # Foul rate (fouls per minute)
+        df['FOUL_RATE'] = df['PF'] / (df['MIN'] + 0.1)
+        df['FOUL_RATE_L10'] = df.groupby('PLAYER_ID')['FOUL_RATE'].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=5).mean()
+        ).fillna(0.2)
+        
+        # Block penalty for foul trouble
+        df['FOUL_TROUBLE_BLOCK_LOSS'] = df['IN_FOUL_DANGER'] * -0.8
+    
+    # 4. BLOCK OPPORTUNITY RATE
+    # Blocks per opponent paint attempt (efficiency)
+    if 'OPP_PAINT_SHOTS' in df.columns and 'BLK' in df.columns:
+        df['BLOCK_RATE'] = df['BLK'] / (df['OPP_PAINT_SHOTS'] + 0.1)
+        df['BLOCK_RATE_L15'] = df.groupby('PLAYER_ID')['BLOCK_RATE'].transform(
+            lambda x: x.shift(1).rolling(15, min_periods=10).mean()
+        ).fillna(0.05)
+    
+    # 5. TEAM DEFENSIVE SCHEME
+    # Some teams (Jazz, Grizzlies) emphasize rim protection
+    team_block_culture = df.groupby(['TEAM_ID', 'SEASON_ID'])['BLK'].transform('median')
+    df['TEAM_BLOCK_EMPHASIS'] = team_block_culture
+    
+    # 6. MINUTES CEILING
+    # Can't block if you're not playing
+    if 'MIN_L5' in df.columns:
+        df['EXPECTED_MINS'] = df['MIN_L5'].fillna(20)
+        df['MINUTES_VOLATILITY'] = df.groupby('PLAYER_ID')['MIN'].transform(
+            lambda x: x.shift(1).rolling(10, min_periods=5).std()
+        ).fillna(5.0)
+    
+    # 7. BLOCK VOLATILITY (Inherent Randomness)
+    # Low variance = more predictable blocker
+    df['BLOCK_VOLATILITY'] = df.groupby('PLAYER_ID')['BLK'].transform(
+        lambda x: x.shift(1).rolling(15, min_periods=10).std()
+    ).fillna(1.0)
+    
+    return df
 
 def main():
     start_time = datetime.now()
@@ -427,6 +664,7 @@ def main():
     df = add_turnover_specific_features(df)
     df = add_rebound_specific_features(df)
     df = add_assist_specific_features(df)
+    df = add_blocks_enhanced_features(df)
 
     print("\n--- STAGE 7: QUALITY CHECKS ---")
     df = validate_data_quality(df)
