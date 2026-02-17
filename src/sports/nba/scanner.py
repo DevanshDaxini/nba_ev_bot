@@ -19,12 +19,12 @@ from datetime import datetime, timedelta
 from nba_api.stats.endpoints import ScoreboardV2, LeagueGameLog
 
 from src.core.odds_providers.prizepicks import PrizePicksClient
-from src.sports.nba.config import STAT_MAP, MODEL_QUALITY, ACTIVE_TARGETS
+from src.sports.nba.config   import STAT_MAP, MODEL_QUALITY, ACTIVE_TARGETS
 from src.sports.nba.injuries import get_injury_report
 
 # --- CONFIGURATION ---
-# Resolve project root: src/sports/nba/scanner.py -> src/sports/nba -> src/sports -> src -> root
-BASE_DIR  = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+# scanner.py lives at src/sports/nba/scanner.py → root is 4 levels up
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 MODEL_DIR = os.path.join(BASE_DIR, 'models', 'nba')
 DATA_FILE = os.path.join(BASE_DIR, 'data',   'nba', 'processed', 'training_dataset.csv')
 PROJ_DIR  = os.path.join(BASE_DIR, 'data',   'nba', 'projections')
@@ -115,24 +115,320 @@ def load_models():
     return models
 
 
-def get_games(date_offset=0, require_scheduled=True):
-    target_date = (datetime.now() + timedelta(days=date_offset)).strftime('%Y-%m-%d')
-    print(f"...Fetching games for {target_date}")
+def get_games(date_offset=0, require_scheduled=True, max_days_forward=7):
+    """
+    Fetch games for a specific date, with fallback to search forward.
+    
+    Args:
+        date_offset (int): Days from today (0=today, 1=tomorrow, etc.)
+        require_scheduled (bool): Only return games not yet started
+        max_days_forward (int): Maximum days to search forward if no games found
+        
+    Returns:
+        tuple: (team_map, actual_date_used)
+            team_map: dict of {team_id: {'is_home': bool, 'opp': opponent_id}}
+            actual_date_used: str of date where games were found
+            
+    Workflow:
+        1. Try the requested date (today, tomorrow, etc.)
+        2. If no games found, search forward day-by-day
+        3. Stop at first date with games (up to max_days_forward)
+        4. Return games + the date they were found on
+        
+    Example:
+        # Today is Monday, no games today/tomorrow
+        # Thursday has games
+        team_map, date = get_games(date_offset=0)
+        # Returns: (thursday_games, '2026-02-20')
+        # Prints: "No games today. Found games on 2026-02-20 (Thursday)"
+    """
+    # Try the initially requested date
+    initial_date = datetime.now() + timedelta(days=date_offset)
+    target_date = initial_date.strftime('%Y-%m-%d')
+    
+    print(f"...Checking for games on {target_date}")
+    
     try:
         board = ScoreboardV2(game_date=target_date, league_id='00', day_offset=0)
         games = board.game_header.get_data_frame()
-        if games.empty: return {}
-        if require_scheduled:
-            games = games[games['GAME_STATUS_ID'] == 1]
-            if games.empty: return {}
-        team_map = {}
-        for _, g in games.iterrows():
-            team_map[g['HOME_TEAM_ID']]    = {'is_home': True,  'opp': g['VISITOR_TEAM_ID']}
-            team_map[g['VISITOR_TEAM_ID']] = {'is_home': False, 'opp': g['HOME_TEAM_ID']}
-        return team_map
+        
+        if not games.empty:
+            if require_scheduled:
+                scheduled_games = games[games['GAME_STATUS_ID'] == 1]
+                if not scheduled_games.empty:
+                    print(f"✅ Found {len(scheduled_games)} scheduled games on {target_date}")
+                    return _build_team_map(scheduled_games), target_date
+            else:
+                print(f"✅ Found {len(games)} games on {target_date}")
+                return _build_team_map(games), target_date
+        
+        # No games on requested date - search forward
+        print(f"   No games on {target_date}. Searching forward...")
+        
+        for days_ahead in range(1, max_days_forward + 1):
+            search_date = (initial_date + timedelta(days=days_ahead)).strftime('%Y-%m-%d')
+            
+            # Show progress every 2 days
+            if days_ahead % 2 == 0 or days_ahead == 1:
+                print(f"   Checking {search_date}...", end='\r')
+            
+            try:
+                board = ScoreboardV2(game_date=search_date, league_id='00', day_offset=0)
+                games = board.game_header.get_data_frame()
+                
+                if not games.empty:
+                    if require_scheduled:
+                        scheduled_games = games[games['GAME_STATUS_ID'] == 1]
+                        if not scheduled_games.empty:
+                            # Found games!
+                            day_name = (initial_date + timedelta(days=days_ahead)).strftime('%A')
+                            print(f"\n✅ Found {len(scheduled_games)} games on {search_date} ({day_name})")
+                            print(f"   📅 That's {days_ahead} day{'s' if days_ahead > 1 else ''} from now")
+                            return _build_team_map(scheduled_games), search_date
+                    else:
+                        if not games.empty:
+                            day_name = (initial_date + timedelta(days=days_ahead)).strftime('%A')
+                            print(f"\n✅ Found {len(games)} games on {search_date} ({day_name})")
+                            return _build_team_map(games), search_date
+            
+            except Exception as e:
+                # Skip this date if error
+                continue
+        
+        # No games found in entire search window
+        print(f"\n❌ No scheduled games found in the next {max_days_forward} days")
+        return {}, None
+        
     except Exception as e:
         print(f"Error fetching games: {e}")
-        return {}
+        return {}, None
+
+
+def _build_team_map(games_df):
+    """
+    Helper function to build team mapping from games DataFrame.
+    
+    Args:
+        games_df: DataFrame with HOME_TEAM_ID and VISITOR_TEAM_ID columns
+        
+    Returns:
+        dict: {team_id: {'is_home': bool, 'opp': opponent_id}}
+    """
+    team_map = {}
+    for _, g in games_df.iterrows():
+        team_map[g['HOME_TEAM_ID']] = {
+            'is_home': True,
+            'opp': g['VISITOR_TEAM_ID']
+        }
+        team_map[g['VISITOR_TEAM_ID']] = {
+            'is_home': False,
+            'opp': g['HOME_TEAM_ID']
+        }
+    return team_map
+
+
+# ============================================================================
+# UPDATED scan_all FUNCTION (to use the new return format)
+# ============================================================================
+
+def scan_all(df_history, models, is_tomorrow=False):
+    """
+    Batch analysis of all games, with automatic forward search.
+    
+    Changes:
+        - Now handles the (team_map, date) tuple from get_games
+        - Shows which date was actually used for scanning
+        - Updates save filename if using future date
+    """
+    offset = 1 if is_tomorrow else 0
+    
+    # NEW: get_games now returns (team_map, actual_date)
+    todays_teams, actual_date = get_games(
+        date_offset=offset,
+        require_scheduled=True,
+        max_days_forward=7
+    )
+    
+    if not todays_teams:
+        print("❌ No scheduled games found in the next 7 days.")
+        input("\nPress Enter to continue...")
+        return
+    
+    # Show what date we're actually scanning
+    if actual_date:
+        scan_date_obj = datetime.strptime(actual_date, '%Y-%m-%d')
+        day_name = scan_date_obj.strftime('%A, %B %d, %Y')
+        print(f"\n📅 Scanning games for: {day_name}")
+    
+    print("\n🚀 Fetching Live PrizePicks Lines...")
+    pp_client = PrizePicksClient(stat_map=STAT_MAP)
+    live_lines = pp_client.fetch_lines_dict(league_filter='NBA')
+
+    # ✅ DEBUG: Show what we got
+    if live_lines:
+        print(f"   ✅ Loaded {len(live_lines)} players from PrizePicks")
+        sample_player = list(live_lines.keys())[0]
+        sample_stats = live_lines[sample_player]
+        print(f"   Example: {sample_player} - {list(sample_stats.keys())[:5]}")
+    else:
+        print("   ⚠️  Got empty response from PrizePicks")
+
+    norm_lines = {normalize_name(k): v for k, v in live_lines.items()}
+
+    print("🚀 Scanning Markets...")
+    best_bets = []
+    all_projections = []
+
+    for team_id, info in todays_teams.items():
+        team_players = df_history[df_history['TEAM_ID'] == team_id]['PLAYER_ID'].unique()
+
+        # Calculate missing usage (injured players)
+        missing_usage_today = 0.0
+        for pid in team_players:
+            p_rows = df_history[df_history['PLAYER_ID'] == pid].sort_values('GAME_DATE')
+            if p_rows.empty: continue
+            last_row = p_rows.iloc[-1]
+            if get_player_status(last_row['PLAYER_NAME']) == 'OUT':
+                usage = last_row.get('USAGE_RATE_Season', 0)
+                if usage > 15:
+                    missing_usage_today += usage
+
+        # Generate predictions for each player
+        for pid in team_players:
+            p_rows = df_history[df_history['PLAYER_ID'] == pid].sort_values('GAME_DATE')
+            if p_rows.empty: continue
+            last_row = p_rows.iloc[-1]
+            player_name = last_row['PLAYER_NAME']
+
+            if get_player_status(player_name) == 'OUT':
+                continue
+
+            input_row = prepare_features(
+                last_row,
+                is_home=info['is_home'],
+                missing_usage=missing_usage_today
+            )
+
+            player_predictions = {}
+
+            for target, model in models.items():
+                model_features = [f for f in model.feature_names_in_ if target not in f]
+                valid_input = input_row.reindex(columns=model_features, fill_value=0)
+                proj = float(model.predict(valid_input)[0])
+                player_predictions[target] = proj
+
+            # Apply correlation constraints
+            if 'PRA' in player_predictions:
+                pts = player_predictions.get('PTS', 0)
+                reb = player_predictions.get('REB', 0)
+                ast = player_predictions.get('AST', 0)
+                player_predictions['PRA'] = max(player_predictions['PRA'], pts + reb + ast)
+
+            if 'PR' in player_predictions:
+                player_predictions['PR'] = max(
+                    player_predictions['PR'],
+                    player_predictions.get('PTS', 0) + player_predictions.get('REB', 0)
+                )
+
+            if 'PA' in player_predictions:
+                player_predictions['PA'] = max(
+                    player_predictions['PA'],
+                    player_predictions.get('PTS', 0) + player_predictions.get('AST', 0)
+                )
+
+            if 'RA' in player_predictions:
+                player_predictions['RA'] = max(
+                    player_predictions['RA'],
+                    player_predictions.get('REB', 0) + player_predictions.get('AST', 0)
+                )
+
+            if 'SB' in player_predictions:
+                player_predictions['SB'] = max(
+                    player_predictions['SB'],
+                    player_predictions.get('STL', 0) + player_predictions.get('BLK', 0)
+                )
+
+            # Create recommendations
+            for target, proj in player_predictions.items():
+                line = norm_lines.get(normalize_name(player_name), {}).get(target)
+                rec = get_betting_indicator(proj, line)
+
+                all_projections.append({
+                    'REC': rec,
+                    'NAME': player_name,
+                    'TARGET': target,
+                    'AI': round(proj, 2),
+                    'PP': round(line, 2) if line else 0,
+                    'EDGE': round(proj - line, 2) if line else 0
+                })
+
+                if line is not None and line > 0:
+                    edge = proj - line
+                    pct_edge = (edge / line) * 100
+
+                    tier_info = MODEL_QUALITY.get(target, {})
+
+                    best_bets.append({
+                        'REC': rec,
+                        'NAME': player_name,
+                        'TARGET': target,
+                        'AI': round(proj, 2),
+                        'PP': round(line, 2),
+                        'EDGE': edge,
+                        'PCT_EDGE': pct_edge,
+                        'TIER': tier_info.get('emoji', '~') + ' ' + tier_info.get('tier', 'UNKNOWN'),
+                        'THRESHOLD': tier_info.get('threshold', 2.5)
+                    })
+
+    # Display results
+    if best_bets:
+        # ✅ DEDUPLICATE: Remove duplicate player+stat+line combinations
+        seen = set()
+        deduped_bets = []
+        
+        for bet in best_bets:
+            # Create unique key: player + stat + line
+            key = (bet['NAME'], bet['TARGET'], bet['PP'])
+            if key not in seen:
+                seen.add(key)
+                deduped_bets.append(bet)
+        
+        print(f"   🧹 Removed {len(best_bets) - len(deduped_bets)} duplicate entries")
+        
+        # Sort by tier and edge
+        tier_order = {'ELITE': 0, 'STRONG': 1, 'DECENT': 2, 'RISKY': 3, 'AVOID': 4}
+        deduped_bets.sort(key=lambda x: (tier_order.get(x['TIER'], 99), -abs(x['PCT_EDGE'])))
+        
+        # Take top 10 after deduplication
+        top_overs  = [b for b in deduped_bets if b['EDGE'] > 0][:10]
+        top_unders = [b for b in deduped_bets if b['EDGE'] < 0][:10]
+
+        print("\n🔥 TOP 10 OVERS (Highest Value)")
+        print(f" {'TIER':<12} | {'PLAYER':<20} | {'STAT':<5} | {'AI vs PP':<15} | {'EDGE %':<8}")
+        print("-" * 85)
+        for bet in top_overs:
+            print(f" {bet['TIER']:<12} | {bet['NAME']:<20} | {bet['TARGET']:<5} | "
+                  f"{bet['AI']:>6.2f} vs {bet['PP']:>6.2f} | {bet['PCT_EDGE']:>6.1f}%")
+
+        print("\n❄️ TOP 10 UNDERS (Lowest Value)")
+        print(f" {'TIER':<12} | {'PLAYER':<20} | {'STAT':<5} | {'AI vs PP':<15} | {'EDGE %':<8}")
+        print("-" * 85)
+        for bet in top_unders:
+            print(f" {bet['TIER']:<12} | {bet['NAME']:<20} | {bet['TARGET']:<5} | "
+                  f"{bet['AI']:>6.2f} vs {bet['PP']:>6.2f} | {bet['PCT_EDGE']:>6.1f}%")
+
+        # Determine save filename based on actual date used
+        if actual_date:
+            save_path = os.path.join(PROJ_DIR, f"scan_{actual_date}.csv")
+        else:
+            save_path = TOMORROW_SCAN_FILE if is_tomorrow else TODAY_SCAN_FILE
+
+        pd.DataFrame(all_projections).to_csv(save_path, index=False)
+        print(f"\n✅ Full analysis ({len(all_projections)} rows) saved to {save_path}")
+    else:
+        print("\n⚠️ No active lines found.")
+
+    input("\nPress Enter to continue...")
 
 
 def get_actual_stats_for_grading(target_date_obj):
@@ -282,12 +578,23 @@ def grade_results():
 
 def scout_player(df_history, models):
     print("\n🔎 --- PLAYER SCOUT ---")
-    d_choice = input("Select Date (1=Today, 2=Tomorrow): ").strip()
+    d_choice = input("Select Start Date (1=Today, 2=Tomorrow): ").strip()
     offset = 1 if d_choice == '2' else 0
-    todays_teams = get_games(date_offset=offset, require_scheduled=True)
+    
+    # Use the improved get_games logic to find the next available games
+    todays_teams, actual_date = get_games(
+        date_offset=offset, 
+        require_scheduled=True, 
+        max_days_forward=7
+    )
+    
     if not todays_teams:
-        print("❌ No scheduled games found.")
+        print("❌ No scheduled games found in the next 7 days.")
         return
+
+    # Display the date being scouted
+    scan_date_obj = datetime.strptime(actual_date, '%Y-%m-%d')
+    print(f"\n📅 Scouting for games on: {scan_date_obj.strftime('%A, %B %d, %Y')}")
 
     pp_client  = PrizePicksClient(stat_map=STAT_MAP)
     scouting   = True
@@ -321,29 +628,29 @@ def scout_player(df_history, models):
                 print("❌ Invalid PLAYER_ID.")
                 continue
 
-        print("...Fetching live PrizePicks lines")
+        # Fetch lines for the identified date
+        print(f"...Fetching PrizePicks lines")
         live_lines = pp_client.fetch_lines_dict(league_filter='NBA')
         norm_lines = {normalize_name(k): v for k, v in live_lines.items()}
-
-        if matches.empty:
-            print("❌ No game data found for this player.")
-            continue
 
         try:
             player_data = matches.sort_values('GAME_DATE').iloc[-1]
         except IndexError:
-            print("❌ No recent games found.")
+            print("❌ No recent history found for this player.")
             continue
 
         name    = player_data['PLAYER_NAME']
         team_id = player_data['TEAM_ID']
+        
+        # Check if the player's team is in the team_map for the 'actual_date'
         if team_id not in todays_teams:
-            print(f"⚠️ {name} is not playing today/tomorrow.")
+            print(f"⚠️ {name} is not scheduled to play on {actual_date}.")
             continue
 
-        is_home = todays_teams.get(team_id, {'is_home': 0})['is_home']
+        is_home = todays_teams[team_id]['is_home']
 
-        team_players      = df_history[df_history['TEAM_ID'] == team_id]['PLAYER_ID'].unique()
+        # Calculate injury impact for the target date
+        team_players = df_history[df_history['TEAM_ID'] == team_id]['PLAYER_ID'].unique()
         missing_usage_today = 0.0
         for pid in team_players:
             p_rows = df_history[df_history['PLAYER_ID'] == pid].sort_values('GAME_DATE')
@@ -353,10 +660,10 @@ def scout_player(df_history, models):
                 usage = last_row.get('USAGE_RATE_Season', 0)
                 if usage > 15: missing_usage_today += usage
 
-        print(f"\n📊 SCOUTING REPORT: {name}")
+        print(f"\n📊 SCOUTING REPORT: {name} ({actual_date})")
         print(f"🚑 Team Injury Impact: {missing_usage_today:.1f}% Missing Usage")
         print(f"{'TIER':<6} | {'MARKET':<8} | {'PROJ':<8} | {'LINE':<8} | RECOMMENDATION")
-        print("-" * 70)
+        print("-" * 75)
 
         input_row = prepare_features(player_data, is_home=is_home, missing_usage=missing_usage_today)
 
@@ -371,117 +678,8 @@ def scout_player(df_history, models):
                 line_str      = f"{line:.2f}" if line else "N/A"
                 print(f"{tier_emoji:<6} | {target:<8} : {pred:<8.2f} | {line_str:<8} | {indicator}")
 
-        if input("\nScout another? (y/n): ").lower() != 'y':
+        if input("\nScout another player? (y/n): ").lower() != 'y':
             scouting = False
-
-
-def scan_all(df_history, models, is_tomorrow=False):
-    offset       = 1 if is_tomorrow else 0
-    todays_teams = get_games(date_offset=offset, require_scheduled=True)
-    if not todays_teams:
-        print("❌ No scheduled games found.")
-        return
-
-    print("\n🚀 Fetching Live PrizePicks Lines...")
-    pp_client  = PrizePicksClient(stat_map=STAT_MAP)
-    live_lines = pp_client.fetch_lines_dict(league_filter='NBA')
-    norm_lines = {normalize_name(k): v for k, v in live_lines.items()}
-
-    print("🚀 Scanning Markets...")
-    best_bets       = []
-    all_projections = []
-
-    for team_id, info in todays_teams.items():
-        team_players = df_history[df_history['TEAM_ID'] == team_id]['PLAYER_ID'].unique()
-
-        missing_usage_today = 0.0
-        for pid in team_players:
-            p_rows = df_history[df_history['PLAYER_ID'] == pid].sort_values('GAME_DATE')
-            if p_rows.empty: continue
-            last_row = p_rows.iloc[-1]
-            if get_player_status(last_row['PLAYER_NAME']) == 'OUT':
-                usage = last_row.get('USAGE_RATE_Season', 0)
-                if usage > 15: missing_usage_today += usage
-
-        for pid in team_players:
-            p_rows = df_history[df_history['PLAYER_ID'] == pid].sort_values('GAME_DATE')
-            if p_rows.empty: continue
-            last_row    = p_rows.iloc[-1]
-            player_name = last_row['PLAYER_NAME']
-            if get_player_status(player_name) == 'OUT': continue
-
-            input_row          = prepare_features(last_row, is_home=info['is_home'], missing_usage=missing_usage_today)
-            player_predictions = {}
-
-            for target, model in models.items():
-                model_features = [f for f in model.feature_names_in_ if target not in f]
-                valid_input    = input_row.reindex(columns=model_features, fill_value=0)
-                player_predictions[target] = float(model.predict(valid_input)[0])
-
-            # Correlation constraints
-            if 'PRA' in player_predictions and 'PTS' in player_predictions:
-                player_predictions['PRA'] = max(player_predictions['PRA'],
-                    player_predictions.get('PTS', 0) + player_predictions.get('REB', 0) + player_predictions.get('AST', 0))
-            if 'PR' in player_predictions and 'PTS' in player_predictions:
-                player_predictions['PR'] = max(player_predictions['PR'],
-                    player_predictions.get('PTS', 0) + player_predictions.get('REB', 0))
-            if 'PA' in player_predictions and 'PTS' in player_predictions:
-                player_predictions['PA'] = max(player_predictions['PA'],
-                    player_predictions.get('PTS', 0) + player_predictions.get('AST', 0))
-            if 'RA' in player_predictions and 'REB' in player_predictions:
-                player_predictions['RA'] = max(player_predictions['RA'],
-                    player_predictions.get('REB', 0) + player_predictions.get('AST', 0))
-            if 'SB' in player_predictions and 'STL' in player_predictions:
-                player_predictions['SB'] = max(player_predictions['SB'],
-                    player_predictions.get('STL', 0) + player_predictions.get('BLK', 0))
-
-            for target, proj in player_predictions.items():
-                line = norm_lines.get(normalize_name(player_name), {}).get(target)
-                if line is None or line <= 0: continue
-                edge = proj - line
-                if target not in MODEL_QUALITY: continue
-                tier_info = MODEL_QUALITY[target]
-                if abs(edge) < tier_info['threshold']: continue
-                rec       = get_betting_indicator(proj, line)
-                pct_edge  = (edge / line) * 100
-                all_projections.append({
-                    'TIER': tier_info['tier'], 'QUALITY': tier_info['emoji'],
-                    'REC': rec, 'NAME': player_name, 'TARGET': target,
-                    'AI': round(proj, 2), 'PP': round(line, 2), 'EDGE': round(edge, 2)
-                })
-                best_bets.append({
-                    'TIER': tier_info['tier'], 'QUALITY': tier_info['emoji'],
-                    'REC': rec, 'NAME': player_name, 'TARGET': target,
-                    'AI': round(proj, 2), 'PP': round(line, 2),
-                    'EDGE': edge, 'PCT_EDGE': pct_edge
-                })
-
-    if best_bets:
-        tier_order = {'ELITE': 0, 'STRONG': 1, 'DECENT': 2, 'RISKY': 3, 'AVOID': 4}
-        best_bets.sort(key=lambda x: (tier_order.get(x['TIER'], 99), -abs(x['PCT_EDGE'])))
-        top_overs  = [b for b in best_bets if b['EDGE'] > 0][:10]
-        top_unders = [b for b in best_bets if b['EDGE'] < 0][:10]
-
-        print("\n🔥 TOP 10 OVERS")
-        print(f" {'TIER':<12} | {'PLAYER':<20} | {'STAT':<5} | {'AI vs PP':<15} | EDGE %")
-        print("-" * 85)
-        for bet in top_overs:
-            print(f" {bet['QUALITY']:<12} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f} | {bet['PCT_EDGE']:>6.1f}%")
-
-        print("\n❄️ TOP 10 UNDERS")
-        print(f" {'TIER':<12} | {'PLAYER':<20} | {'STAT':<5} | {'AI vs PP':<15} | EDGE %")
-        print("-" * 85)
-        for bet in top_unders:
-            print(f" {bet['QUALITY']:<12} | {bet['NAME']:<20} | {bet['TARGET']:<5} | {bet['AI']:>6.2f} vs {bet['PP']:>6.2f} | {bet['PCT_EDGE']:>6.1f}%")
-
-        os.makedirs(PROJ_DIR, exist_ok=True)
-        save_path = TOMORROW_SCAN_FILE if is_tomorrow else TODAY_SCAN_FILE
-        pd.DataFrame(all_projections).to_csv(save_path, index=False)
-        print(f"\n✅ Full analysis ({len(all_projections)} rows) saved to {save_path}")
-    else:
-        print("\n⚠️ No active lines found.")
-
-    input("\nPress Enter to continue...")
 
 
 def main():
