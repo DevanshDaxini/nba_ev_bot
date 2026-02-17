@@ -9,17 +9,19 @@ __pycache__/
 # Data files (large, not tracked)
 data/nba/raw/
 data/nba/processed/
-data/cbb/
+data/nba/projections/
 
 # Model binaries (regenerate with train.py)
 models/nba/*.json
-models/cbb/
 
 # Output / scan results
 output/
 
 # FanDuel API cache
 fanduel_cache/
+
+# PrizePicks API cache
+prizepicks_cache/
 
 # IDE
 .vscode/
