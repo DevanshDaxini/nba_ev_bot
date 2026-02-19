@@ -55,7 +55,7 @@ def _scrape_espn():
     try:
         response = requests.get(INJURY_URL, headers=_HEADERS, timeout=15)
         if response.status_code != 200:
-            print(f"   ⚠️  ESPN returned status {response.status_code}")
+            print(f"   Warning: ESPN returned status {response.status_code}")
             return {}
 
         soup = BeautifulSoup(response.content, 'html.parser')
@@ -89,7 +89,7 @@ def _scrape_espn():
         return injury_data
 
     except Exception as e:
-        print(f"   ⚠️  ESPN scrape failed: {e}")
+        print(f"   Warning: ESPN scrape failed: {e}")
         return {}
 
 
@@ -186,7 +186,7 @@ def get_injury_report():
         dict: {player_name: status}  e.g. {'LeBron James': 'OUT'}
               Returns {} if all scrapes fail (safe fallback).
     """
-    print("...Fetching Live Injury Report from ESPN")
+    print("Loading injuries...")
 
     # Primary: ESPN
     injury_data = _scrape_espn()
@@ -201,11 +201,9 @@ def get_injury_report():
                 injury_data[name] = status
                 existing_names.add(name)
                 added += 1
-        if added:
-            print(f"   📋 +{added} additional players from CBS Sports")
     except Exception:
         pass  # CBS is best-effort
 
     out_count = sum(1 for s in injury_data.values() if s == "OUT")
-    print(f"✅ Loaded {len(injury_data)} injury reports ({out_count} OUT).")
+    print(f"Injuries: {len(injury_data)} reports ({out_count} OUT)")
     return injury_data
