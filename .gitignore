@@ -32,4 +32,5 @@ prizepicks_cache/
 Thumbs.db
 
 # src/sports
-src/sports/nba/tune_train.py
+src/sports/nba/tune_train.pydata/tennis/
+models/tennis/
