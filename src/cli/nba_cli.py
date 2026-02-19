@@ -25,7 +25,10 @@ from src.sports.nba.config import (
 )
 from src.sports.nba.mappings import PP_NORMALIZATION_MAP, STAT_MAPPING, VOLATILITY_MAP
 import src.sports.nba.scanner as ai_scanner_module
-from src.sports.nba.scanner import load_data, load_models, get_games, prepare_features, normalize_name
+from src.sports.nba.scanner import (
+    load_data, load_models, get_games, prepare_features, normalize_name,
+    refresh_injuries, get_player_status
+)
 
 warnings.filterwarnings('ignore')
 
@@ -37,6 +40,7 @@ OUTPUT_DIR = os.path.join(_BASE, 'output', 'nba', 'scans')
 # --- HELPER: RUN AI PREDICTIONS ---
 def get_ai_predictions():
     print("...Loading AI Models & Data")
+    refresh_injuries()  # Fresh injury data for accurate projections
     df_history = load_data()
     models     = load_models()
 
@@ -74,13 +78,35 @@ def get_ai_predictions():
 
     for team_id, info in all_teams.items():
         team_players = df_history[df_history['TEAM_ID'] == team_id]['PLAYER_ID'].unique()
+
+        # Calculate missing usage from injured (OUT) teammates — boosts projections for healthy players
+        missing_usage_today = 0.0
         for pid in team_players:
             p_rows = df_history[df_history['PLAYER_ID'] == pid].sort_values('GAME_DATE')
-            if p_rows.empty: continue
+            if p_rows.empty:
+                continue
+            last_row = p_rows.iloc[-1]
+            if get_player_status(last_row['PLAYER_NAME']) == 'OUT':
+                usage = last_row.get('USAGE_RATE_Season', 0)
+                if usage > 15:
+                    missing_usage_today += usage
+
+        for pid in team_players:
+            p_rows = df_history[df_history['PLAYER_ID'] == pid].sort_values('GAME_DATE')
+            if p_rows.empty:
+                continue
             last_row    = p_rows.iloc[-1]
             player_name = last_row['PLAYER_NAME']
 
-            input_row = prepare_features(last_row, is_home=info['is_home'])
+            # Skip injured (OUT) players — no projection for them
+            if get_player_status(player_name) == 'OUT':
+                continue
+
+            input_row = prepare_features(
+                last_row,
+                is_home=info['is_home'],
+                missing_usage=missing_usage_today
+            )
 
             for target, model in models.items():
                 if target not in ACTIVE_TARGETS:

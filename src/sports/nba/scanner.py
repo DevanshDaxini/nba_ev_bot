@@ -39,9 +39,14 @@ ACCURACY_LOG_FILE  = os.path.join(PROJ_DIR, 'accuracy_log.csv')
 
 warnings.filterwarnings('ignore')
 
-# Load injuries once at startup
-print("...Loading Injury Report")
-INJURY_DATA = get_injury_report()
+# Injury cache — refreshed before each scan (see refresh_injuries)
+INJURY_DATA = {}
+
+
+def refresh_injuries():
+    """Fetch fresh injury report and update global cache. Call before each scan."""
+    global INJURY_DATA
+    INJURY_DATA = get_injury_report()
 
 TARGETS = ACTIVE_TARGETS
 
@@ -86,10 +91,24 @@ def normalize_name(name):
 
 
 def get_player_status(name):
+    """
+    Check if player is on injury report. Uses exact match + last-name fallback
+    (ESPN may use 'Patrick Williams' while our data has 'Patrick Williams II').
+    """
     norm_name = normalize_name(name)
     for injured_name, status in INJURY_DATA.items():
         if normalize_name(injured_name) == norm_name:
             return status
+    # Fallback: last-name match when exactly one injured player shares that last name
+    parts = norm_name.split()
+    if len(parts) >= 2:
+        last_name = parts[-1]
+        matches = [
+            s for inj_name, s in INJURY_DATA.items()
+            if normalize_name(inj_name).split()[-1] == last_name
+        ]
+        if len(matches) == 1:
+            return matches[0]
     return "Active"
 
 
@@ -279,7 +298,9 @@ def scan_all(df_history, models, is_tomorrow=False):
         - Now handles the (team_map, date) tuple from get_games
         - Shows which date was actually used for scanning
         - Updates save filename if using future date
+        - Refreshes injury report before each scan for accurate projections
     """
+    refresh_injuries()
     offset = 1 if is_tomorrow else 0
     
     # NEW: get_games now returns (team_map, actual_date)
@@ -629,6 +650,7 @@ def grade_results():
 
 def scout_player(df_history, models):
     print("\n🔎 --- PLAYER SCOUT ---")
+    refresh_injuries()
     d_choice = input("Select Start Date (1=Today, 2=Tomorrow): ").strip()
     offset = 1 if d_choice == '2' else 0
     
@@ -735,6 +757,7 @@ def scout_player(df_history, models):
 
 def main():
     print("...Initializing System")
+    refresh_injuries()
     df     = load_data()
     models = load_models()
     if df is None or not models:
