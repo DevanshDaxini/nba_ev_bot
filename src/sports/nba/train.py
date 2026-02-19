@@ -23,7 +23,7 @@ from sklearn.metrics import mean_absolute_error, r2_score
 BASE_DIR    = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 DATA_FILE   = os.path.join(BASE_DIR, 'data',   'nba', 'processed', 'training_dataset.csv')
 MODEL_DIR   = os.path.join(BASE_DIR, 'models', 'nba')
-TEST_START_DATE = '2025-02-01'
+# TEST_START_DATE removed in favor of dynamic split
 
 TARGETS = [
     'PTS', 'REB', 'AST', 'FG3M', 'FG3A', 'BLK', 'STL', 'TOV',
@@ -48,7 +48,10 @@ FEATURES = [
     'TS_PCT', 'DAYS_REST', 'IS_HOME',
     'GAMES_7D', 'IS_4_IN_6', 'IS_B2B', 'IS_FRESH',
     'PACE_ROLLING', 'FGA_PER_MIN', 'TOV_PER_USAGE',
-    'USAGE_VACUUM', 'STAR_COUNT'
+    'USAGE_VACUUM', 'STAR_COUNT',
+    # NEW FEATURES
+    'PTS_LOC_MEAN', 'REB_LOC_MEAN', 'AST_LOC_MEAN', 'FG3M_LOC_MEAN', 'PRA_LOC_MEAN',
+    'OPP_WIN_PCT', 'IS_VS_ELITE_TEAM'
 ]
 
 for combo in ['PRA', 'PR', 'PA', 'RA', 'SB']:
@@ -56,9 +59,11 @@ for combo in ['PRA', 'PR', 'PA', 'RA', 'SB']:
 
 for stat in ['PTS', 'REB', 'AST', 'FG3M', 'FGA', 'BLK', 'STL', 'TOV', 'FGM', 'FTM', 'FTA']:
     FEATURES.append(f'OPP_{stat}_ALLOWED')
+    FEATURES.append(f'OPP_{stat}_ALLOWED_DIFF')  # New DvP Diff
 
 for combo in ['PRA', 'PR', 'PA', 'RA', 'SB']:
     FEATURES.append(f'OPP_{combo}_ALLOWED')
+    FEATURES.append(f'OPP_{combo}_ALLOWED_DIFF')  # New DvP Diff
 
 
 def ensure_combo_stats(df):
@@ -81,9 +86,18 @@ def train_and_evaluate():
     df = pd.read_csv(DATA_FILE)
     df['GAME_DATE'] = pd.to_datetime(df['GAME_DATE'])
     df = ensure_combo_stats(df)
-
-    train_df = df[df['GAME_DATE'] <  TEST_START_DATE]
-    test_df  = df[df['GAME_DATE'] >= TEST_START_DATE]
+    
+    # Sort by date for time-series split
+    df = df.sort_values('GAME_DATE').reset_index(drop=True)
+    
+    # Dynamic 70/30 Split
+    split_idx = int(len(df) * 0.70)
+    train_df = df.iloc[:split_idx]
+    test_df  = df.iloc[split_idx:]
+    
+    # Print date ranges for verification
+    print(f"Train Date Range: {train_df['GAME_DATE'].min().date()} -> {train_df['GAME_DATE'].max().date()}")
+    print(f"Test Date Range:  {test_df['GAME_DATE'].min().date()} -> {test_df['GAME_DATE'].max().date()}")
 
     print(f"Training Set: {len(train_df)} games")
     print(f"Testing Set:  {len(test_df)} games")
