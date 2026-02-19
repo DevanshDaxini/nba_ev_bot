@@ -141,3 +141,26 @@ print(f"⚙️  {mode_descriptions.get(SCANNING_MODE, 'UNKNOWN MODE')}")
 print(f"   Scanning: {', '.join(ACTIVE_TARGETS)}")
 if SCANNING_MODE == 'BALANCED':
     print(f"   Excluded: {', '.join(MODEL_TIERS['RISKY']['models'] + MODEL_TIERS['AVOID']['models'])}")
+
+# 6. Injury Adjustment — Absorption Rates
+# What fraction of a missing player's production redistributes to active teammates.
+# Lower = more player-specific skill (hard to replace),  Higher = more opportunity-based.
+ABSORPTION_RATES = {
+    'PTS':  0.50,   # Scoring redistributes moderately
+    'FGM':  0.45,   # Shot-making is partially skill-dependent
+    'FGA':  0.55,   # Shot attempts redistribute well
+    'FG3M': 0.30,   # 3PT shooting is very skill-dependent
+    'FG3A': 0.45,   # 3PT attempts redistribute somewhat
+    'REB':  0.65,   # Rebounds strongly redistribute (someone grabs them)
+    'AST':  0.35,   # Assists are playmaker-specific
+    'STL':  0.20,   # Steals are position/skill-dependent
+    'BLK':  0.20,   # Blocks are heavily position-dependent
+    'TOV':  0.25,   # Turnovers don't "redistribute" meaningfully
+    'FTM':  0.35,   # Free throws depend on who drives to rim
+    'FTA':  0.40,   # FT attempts redistribute a bit
+    'PRA':  0.50,   # Combo stat — average of components
+    'PR':   0.55,   # PTS + REB — rebounds help
+    'PA':   0.42,   # PTS + AST — assists drag it down
+    'RA':   0.48,   # REB + AST — mixed
+    'SB':   0.20,   # Steals + Blocks — very position-dependent
+}
