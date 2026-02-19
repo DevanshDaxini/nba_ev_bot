@@ -31,7 +31,7 @@ import os
 # ---------------------------------------------------------------------------
 CACHE_DIR              = 'prizepicks_cache'
 CACHE_FILE             = os.path.join(CACHE_DIR, 'prizepicks_cache.json')
-CACHE_DURATION_MINUTES = 30
+CACHE_DURATION_MINUTES = 2
 
 
 class PrizePicksClient:
@@ -43,18 +43,19 @@ class PrizePicksClient:
     # -----------------------------------------------------------------------
     BASE_URL = "https://partner-api.prizepicks.com/projections?per_page=1000&single_stat=true"
 
-    # NBA league_id on PrizePicks
     LEAGUE_ID_MAP = {
-        'NBA':  7,
-        'NFL':  1,
-        'MLB':  3,
-        'NHL':  8,
-        'WNBA': 9,
-        'CBB':  4,
+        'NBA':    7,
+        'NFL':    1,
+        'MLB':    3,
+        'NHL':    8,
+        'WNBA':   9,
+        'CBB':    4,
+        'TENNIS': 29,   # ATP + WTA combined on PrizePicks
     }
 
     # Stat name normalisation: PrizePicks display name → model target code
     STAT_NORMALIZATION = {
+        # --- NBA ---
         'Points':                'PTS',
         'Rebounds':              'REB',
         'Assists':               'AST',
@@ -72,6 +73,16 @@ class PrizePicksClient:
         'Field Goals Made':      'FGM',
         'Free Throws Attempted': 'FTA',
         'Field Goals Attempted': 'FGA',
+
+        # --- Tennis ---
+        'Total Games':           'total_games',
+        'Total Games Won':       'games_won',
+        'Total Sets':            'total_sets',
+        'Aces':                  'aces',
+        'Fantasy Score':         'fantasy_score',
+        'Break Points Won':      'bp_won',
+        'Total Tie Breaks':      'total_tiebreaks',
+        'Double Faults':         'double_faults',
     }
 
     def __init__(self, stat_map=None):
@@ -109,82 +120,86 @@ class PrizePicksClient:
             "sec-ch-ua-mobile":   "?0",
             "sec-ch-ua-platform": '"macOS"',
         })
-
+        
     # -----------------------------------------------------------------------
     # Public interface
     # -----------------------------------------------------------------------
 
-    def fetch_board(self, league_filter=None, date_filter=None):
+    def fetch_board(self, league_filter=None, date_filter=None, include_alts=False):
         """
         Fetch current PrizePicks prop board.
 
         Args:
-            league_filter (str): e.g. 'NBA'  — filters by league name.
+            league_filter (str): e.g. 'NBA' or 'TENNIS' — filters by league name.
             date_filter   (str): e.g. '2026-02-19' — filters by game date.
+            include_alts (bool): If True, include goblin/demon alt lines.
 
         Returns:
-            pd.DataFrame with columns: Player, League, Stat, Line, Date
+            pd.DataFrame with columns: Player, League, Stat, Line, Date, OddsType
             Returns empty DataFrame on any failure.
         """
         # --- 1. Try disk cache first ---
         cached = self._load_cache()
         if cached is not None:
             df = pd.DataFrame(cached)
+            if not include_alts and 'OddsType' in df.columns:
+                df = df[df['OddsType'].isin(['standard', ''])]
             return self._apply_filters(df, league_filter, date_filter)
 
-        # --- 2. Build URL (add league_id filter if we know it) ---
+        # --- 2. Build URL ---
+        # Always fetch ALL leagues in one shot. Filtering happens client-side
+        # via _apply_filters(), so the cache works across league switches.
         url = self.BASE_URL
-        if league_filter and league_filter in self.LEAGUE_ID_MAP:
-            url += f"&league_id={self.LEAGUE_ID_MAP[league_filter]}"
 
-        # Small random delay — be polite, avoid hammering the server
+        # Small random delay — be polite
         time.sleep(random.uniform(0.5, 1.5))
 
         # --- 3. Fetch ---
         try:
             response = self.session.get(url, timeout=15)
         except requests.exceptions.ConnectionError as e:
-            print(f"❌ PrizePicks: connection error — {e}")
+            print("PrizePicks: connection error")
             return pd.DataFrame()
         except requests.exceptions.Timeout:
-            print("❌ PrizePicks: request timed out (15s)")
+            print("PrizePicks: request timed out")
             return pd.DataFrame()
         except Exception as e:
-            print(f"❌ PrizePicks: unexpected error — {e}")
+            print(f"PrizePicks: unexpected error — {e}")
             return pd.DataFrame()
 
         # --- 4. Handle bad status ---
         if response.status_code == 403:
-            print("⚠️  PrizePicks returned 403 Forbidden")
-            print("   The partner endpoint is normally unprotected — check your network / IP.")
+            print("PrizePicks: 403 Forbidden")
             return pd.DataFrame()
 
         if response.status_code == 429:
-            print("⚠️  PrizePicks returned 429 Too Many Requests — rate limited")
+            print("PrizePicks: rate limited (429)")
             return pd.DataFrame()
 
         if response.status_code != 200:
-            print(f"⚠️  PrizePicks returned unexpected status {response.status_code}")
+            print(f"PrizePicks: unexpected status {response.status_code}")
             return pd.DataFrame()
 
         # --- 5. Parse JSON ---
         try:
             data = response.json()
         except Exception as e:
-            print(f"❌ PrizePicks: failed to parse JSON — {e}")
+            print(f"PrizePicks: failed to parse JSON — {e}")
             return pd.DataFrame()
 
-        # --- 6. Build clean rows ---
+        # --- 6. Build clean rows (always includes all line types) ---
         clean_lines = self._parse_response(data)
 
         if not clean_lines:
-            print("⚠️  PrizePicks: parsed 0 lines from response")
+            print("PrizePicks: 0 lines parsed")
             return pd.DataFrame()
 
-        # --- 7. Save to disk cache ---
+        # --- 7. Save ALL lines to disk cache (including alts) ---
         self._save_cache(clean_lines)
 
         df = pd.DataFrame(clean_lines)
+        if not include_alts and 'OddsType' in df.columns:
+            df = df[df['OddsType'].isin(['standard', ''])]
         return self._apply_filters(df, league_filter, date_filter)
 
     def fetch_lines_dict(self, league_filter='NBA', date_filter=None):
@@ -193,7 +208,7 @@ class PrizePicksClient:
 
         Returns:
             dict: {player_name: {stat_code: line_value}}
-            e.g.  {'LeBron James': {'PTS': 25.5, 'PRA': 43.5}}
+            e.g.  {'Carlos Alcaraz': {'aces': 6.5, 'total_games': 22.5}}
         """
         df = self.fetch_board(league_filter=league_filter, date_filter=date_filter)
         if df.empty:
@@ -245,15 +260,13 @@ class PrizePicksClient:
             attrs = proj.get('attributes', {})
             rels  = proj.get('relationships', {})
 
-            # --- Skip promos and non-standard lines ---
+            # --- Skip promos only (keep goblin/demon for cache) ---
             if attrs.get('is_promo') is True:
                 continue
-            if attrs.get('odds_type') not in ('standard', None, ''):
-                continue
+
+            odds_type = attrs.get('odds_type', 'standard') or 'standard'
 
             # --- Resolve player name ---
-            # Shape A (old): relationships.new_player.data.id → player_map
-            # Shape B (new): attributes.name or attributes.player_name directly
             player_name = None
 
             if 'new_player' in rels:
@@ -264,11 +277,10 @@ class PrizePicksClient:
                     pass
 
             if not player_name:
-                # Fallback: some partner-api responses embed name in attributes
                 player_name = attrs.get('player_name') or attrs.get('name')
 
             if not player_name:
-                continue  # Can't identify player — skip
+                continue
 
             # --- Resolve league ---
             league_name = None
@@ -292,26 +304,70 @@ class PrizePicksClient:
                 'Stat':   attrs.get('stat_type', ''),
                 'Line':   attrs.get('line_score', 0),
                 'Date':   game_date,
+                'OddsType': odds_type,
             })
 
         return clean_lines
+
+    def fetch_lines_with_type(self, league_filter='NBA', date_filter=None):
+        """
+        Fetch PrizePicks lines with line type info (standard/goblin/demon).
+
+        Prefers standard lines; falls back to goblin/demon if no standard exists.
+
+        Returns:
+            dict: {player_name: {stat_code: {'line': float, 'type': str}}}
+        """
+        df = self.fetch_board(league_filter=league_filter, date_filter=date_filter, include_alts=True)
+        if df.empty:
+            return {}
+
+        lines_dict = {}
+        for _, row in df.iterrows():
+            player   = row['Player']
+            raw_stat = row['Stat']
+            line     = row['Line']
+            odds_type = row.get('OddsType', 'standard') or 'standard'
+            if not player:
+                continue
+            norm_stat = self.STAT_NORMALIZATION.get(raw_stat, self.stat_map.get(raw_stat, raw_stat))
+            if player not in lines_dict:
+                lines_dict[player] = {}
+            # Prefer standard over alt — only overwrite if upgrading to standard
+            if norm_stat in lines_dict[player]:
+                existing_type = lines_dict[player][norm_stat]['type']
+                if existing_type == 'standard':
+                    continue  # keep standard, skip this alt
+            lines_dict[player][norm_stat] = {'line': float(line), 'type': odds_type}
+
+        return lines_dict
 
     def _apply_filters(self, df, league_filter, date_filter):
         """Apply league and date filters to a board DataFrame."""
         if df.empty:
             return df
+        df_all = df  # keep reference to full board for diagnostics
         if league_filter:
-            df = df[df['League'] == league_filter]
+            # Try exact match first, then case-insensitive
+            exact = df[df['League'] == league_filter]
+            if exact.empty:
+                df = df[df['League'].str.upper() == league_filter.upper()]
+            else:
+                df = exact
         if date_filter:
             df = df[df['Date'] == date_filter]
         if df.empty:
-            print(f"⚠️  PrizePicks: no lines after filtering"
-                  + (f" (league={league_filter})" if league_filter else "")
-                  + (f" (date={date_filter})"   if date_filter   else ""))
+            # Show available leagues to help diagnose
+            avail = df_all['League'].unique().tolist()
+            print(f"   No {league_filter or 'matching'} lines on PrizePicks right now.")
+            if avail:
+                print(f"   Available leagues: {avail}")
+            if league_filter and league_filter.upper() == 'TENNIS':
+                print(f"   Tennis lines are posted 1-2 days before matches.")
         return df.reset_index(drop=True)
 
     # -----------------------------------------------------------------------
-    # Disk cache (30-minute TTL, same pattern as fanduel.py)
+    # Disk cache (30-minute TTL)
     # -----------------------------------------------------------------------
 
     def _load_cache(self):
@@ -321,15 +377,14 @@ class PrizePicksClient:
         try:
             age_mins = (time.time() - os.path.getmtime(CACHE_FILE)) / 60
             if age_mins < CACHE_DURATION_MINUTES:
-                print(f"   ♻️  Using saved PrizePicks data from {int(age_mins)} min(s) ago."
-                      f"  (Expires in {int(CACHE_DURATION_MINUTES - age_mins)} min(s))")
+                print(f"   Using cached PP data ({int(age_mins)}m ago, expires in {int(CACHE_DURATION_MINUTES - age_mins)}m)")
                 with open(CACHE_FILE, 'r') as f:
                     return json.load(f)
             else:
-                print(f"   ⚠️  PrizePicks cache is {int(age_mins)} min(s) old — fetching fresh data.")
+                print(f"   PP cache expired ({int(age_mins)}m old) — fetching fresh")
                 return None
         except Exception as e:
-            print(f"   ⚠️  Could not read PrizePicks cache: {e}")
+            print(f"   Warning: could not read PP cache: {e}")
             return None
 
     def _save_cache(self, data_list):
@@ -338,9 +393,9 @@ class PrizePicksClient:
             os.makedirs(CACHE_DIR, exist_ok=True)
             with open(CACHE_FILE, 'w') as f:
                 json.dump(data_list, f)
-            print(f"   💾 PrizePicks data cached to '{CACHE_FILE}'.")
+            print(f"   PP data cached to '{CACHE_FILE}'")
         except Exception as e:
-            print(f"   ⚠️  Could not save PrizePicks cache: {e}")
+            print(f"   Warning: could not save PP cache: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -360,11 +415,27 @@ def fetch_current_lines_dict(league_filter='NBA', date_filter=None):
 if __name__ == "__main__":
     print("--- TESTING PRIZEPICKS CLIENT ---")
     client = PrizePicksClient()
-    lines  = client.fetch_lines_dict(league_filter='NBA')
 
-    if lines:
-        print(f"\n✅ Success! Fetched lines for {len(lines)} players")
-        sample = list(lines.keys())[0]
-        print(f"\nExample → {sample}: {lines[sample]}")
+    print("\n[NBA]")
+    nba_lines = client.fetch_lines_dict(league_filter='NBA')
+    if nba_lines:
+        print(f"✅ Fetched lines for {len(nba_lines)} NBA players")
+        sample = list(nba_lines.keys())[0]
+        print(f"   Example → {sample}: {nba_lines[sample]}")
     else:
-        print("\n❌ Failed to fetch data")
+        print("❌ Failed to fetch NBA data")
+
+    print("\n[TENNIS]")
+    # Force fresh fetch (bypass cache) for tennis test
+    tennis_client = PrizePicksClient()
+    tennis_df = tennis_client.fetch_board(league_filter='TENNIS')
+    if not tennis_df.empty:
+        print(f"✅ Fetched {len(tennis_df)} tennis lines")
+        print(f"   Players: {tennis_df['Player'].nunique()}")
+        print(f"   Stats: {tennis_df['Stat'].unique().tolist()}")
+        print(f"\n   Sample:\n{tennis_df.head(5).to_string(index=False)}")
+    else:
+        print("❌ No tennis lines found")
+        print("   Note: Tennis may not be active on PrizePicks today.")
+        print("   If league_id=29 is wrong, run the debug below to find the correct ID:")
+        print("   client.fetch_board()  # no filter → prints all leagues")
