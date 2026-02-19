@@ -97,6 +97,10 @@ class FanDuelClient:
         self.base_url = "https://api.the-odds-api.com/v4/sports"
         self.cache = SimpleCache(duration=300)
 
+        # Sport-specific cache file — prevents NBA/Tennis cross-contamination
+        sport_tag = '_'.join(sorted(sport_map.keys())).lower().replace(' ', '')
+        self.cache_file = os.path.join(CACHE_DIR, f'fanduel_cache_{sport_tag}.json')
+
     def get_all_odds(self, limit_games=None, target_date=None):
         """
         Fetch player prop odds with intelligent caching.
@@ -120,7 +124,7 @@ class FanDuelClient:
             else:
                 return cached_df
 
-        print(f"   \U0001f4b8 Cache expired or missing. Fetching fresh odds (Costs Credits)...")
+        print(f"   Cache expired — fetching fresh odds (costs credits)...")
         all_data = []
 
         for league_name, sport_key in self.sport_map.items():
@@ -188,19 +192,18 @@ class FanDuelClient:
         return final_df
 
     def _load_from_disk_cache(self):
-        if not os.path.exists(CACHE_FILE):
+        if not os.path.exists(self.cache_file):
             return None
         try:
-            file_mod_time = os.path.getmtime(CACHE_FILE)
+            file_mod_time = os.path.getmtime(self.cache_file)
             file_age_minutes = (time.time() - file_mod_time) / 60
             if file_age_minutes < CACHE_DURATION_MINUTES:
-                print(f"   \u267b\ufe0f  Using Saved FanDuel Data from {int(file_age_minutes)} min(s) ago.")
-                print(f"       (0 API Credits Used) - Expires in {int(CACHE_DURATION_MINUTES - file_age_minutes)} min(s)")
-                with open(CACHE_FILE, 'r') as f:
+                print(f"   Using cached FD data ({int(file_age_minutes)}m ago, expires in {int(CACHE_DURATION_MINUTES - file_age_minutes)}m)")
+                with open(self.cache_file, 'r') as f:
                     data = json.load(f)
                 return pd.DataFrame(data)
             else:
-                print(f"   \u26a0\ufe0f  Saved data is too old ({int(file_age_minutes)} mins). Need refresh.")
+                print(f"   FD cache expired ({int(file_age_minutes)}m old) — refreshing")
                 return None
         except Exception as e:
             print(f"   Warning: Could not load cache: {e}")
@@ -208,12 +211,10 @@ class FanDuelClient:
 
     def _save_to_disk_cache(self, data_list):
         try:
-            if not os.path.exists(CACHE_DIR):
-                os.makedirs(CACHE_DIR)
-                print(f"   \U0001f4c2 Created directory: {CACHE_DIR}")
-            with open(CACHE_FILE, 'w') as f:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(self.cache_file, 'w') as f:
                 json.dump(data_list, f)
-            print(f"   \U0001f4be Saved fresh odds to '{CACHE_FILE}' for future use.")
+            print(f"   FD odds cached to '{self.cache_file}'")
         except Exception as e:
             print(f"   Warning: Could not save cache: {e}")
 
