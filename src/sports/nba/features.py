@@ -100,6 +100,18 @@ def add_team_performance_context(df):
         lambda x: x.shift(1).expanding(min_periods=1).mean()).fillna(0.5)
     df['TEAM_L5_WIN_PCT'] = df.groupby(['TEAM_ID', 'SEASON_ID'])['TEAM_WIN'].transform(
         lambda x: x.shift(1).rolling(5, min_periods=5).mean()).fillna(df['TEAM_WIN_PCT'])
+    
+    # STRENGTH OF SCHEDULE (Opponent Win %)
+    # Rows where OPPONENT='BOS' allow us to calculate Boston's win % (Opponent Loss %)
+    # If Team Won vs Boston, Boston Lost. 
+    # BostonWin% = 1 - (Win% of teams playing against Boston)
+    df['OPP_WIN_PCT'] = 1.0 - df.groupby(['OPPONENT', 'SEASON_ID'])['TEAM_WIN'].transform(
+        lambda x: x.shift(1).expanding(min_periods=1).mean()
+    ).fillna(0.5)
+    
+    # Is Opponent 'Elite'? (Top 25% Win Rate)
+    df['IS_VS_ELITE_TEAM'] = (df['OPP_WIN_PCT'] > 0.60).astype(int)
+    
     df['AVG_POINT_DIFF'] = 0
     return df
 
@@ -114,16 +126,31 @@ def add_defense_vs_position(df):
         new_def_cols[col_name] = defense_group[stat].transform(
             lambda x: x.shift(1).rolling(10, min_periods=10).mean())
     df = pd.concat([df, pd.DataFrame(new_def_cols, index=df.index)], axis=1)
+    
+    # Normalize DvP vs League Average (DvP Diff)
+    # "Allowed 25 pts" means nothing if league avg is 26.
     for stat in TARGET_STATS:
         col_name = f'OPP_{stat}_ALLOWED'
         league_pos_avg = df.groupby(['POSITION', 'SEASON_ID'])[stat].transform('median')
         df[col_name] = df[col_name].fillna(league_pos_avg)
+        
+        # Calculate Difference (Positive = Good Matchup / Bad Defense)
+        # e.g. Allowed 25, Avg 20 -> +5 (Good for player)
+        df[f'{col_name}_DIFF'] = df[col_name] - league_pos_avg
+        
     if 'OPP_PTS_ALLOWED' in df.columns and 'OPP_REB_ALLOWED' in df.columns:
         df['OPP_PRA_ALLOWED'] = df['OPP_PTS_ALLOWED'] + df['OPP_REB_ALLOWED'] + df['OPP_AST_ALLOWED']
         df['OPP_PR_ALLOWED']  = df['OPP_PTS_ALLOWED'] + df['OPP_REB_ALLOWED']
         df['OPP_PA_ALLOWED']  = df['OPP_PTS_ALLOWED'] + df['OPP_AST_ALLOWED']
         df['OPP_RA_ALLOWED']  = df['OPP_REB_ALLOWED'] + df['OPP_AST_ALLOWED']
         df['OPP_SB_ALLOWED']  = df['OPP_STL_ALLOWED'] + df['OPP_BLK_ALLOWED']
+        
+        # Calculate Diffs for Combos (Linear combination works)
+        df['OPP_PRA_ALLOWED_DIFF'] = df['OPP_PTS_ALLOWED_DIFF'] + df['OPP_REB_ALLOWED_DIFF'] + df['OPP_AST_ALLOWED_DIFF']
+        df['OPP_PR_ALLOWED_DIFF']  = df['OPP_PTS_ALLOWED_DIFF'] + df['OPP_REB_ALLOWED_DIFF']
+        df['OPP_PA_ALLOWED_DIFF']  = df['OPP_PTS_ALLOWED_DIFF'] + df['OPP_AST_ALLOWED_DIFF']
+        df['OPP_RA_ALLOWED_DIFF']  = df['OPP_REB_ALLOWED_DIFF'] + df['OPP_AST_ALLOWED_DIFF']
+        df['OPP_SB_ALLOWED_DIFF']  = df['OPP_STL_ALLOWED_DIFF'] + df['OPP_BLK_ALLOWED_DIFF']
     return df
 
 
@@ -239,6 +266,32 @@ def add_momentum_features(df):
         if season_col in df.columns:
             df[f'{stat}_HOT_STREAK'] = (df[f'{stat}_L3_AVG'] - df[season_col]).fillna(0)
         df = df.drop(columns=[f'{stat}_L3_AVG'], errors='ignore')
+    return df
+
+
+def add_home_away_performance(df):
+    """
+    Calculate performance splits based on Location (Home vs Away).
+    """
+    print("...Calculating Home/Away Splits")
+    df = df.copy()
+    
+    # We want to know: "How does this player perform at the CURRENT location?"
+    # If IS_HOME=1, we want their Home Avg.
+    # If IS_HOME=0, we want their Away Avg.
+    
+    # Group by [PLAYER_ID, IS_HOME]
+    splits = {}
+    for stat in ['PTS', 'REB', 'AST', 'FG3M', 'PRA']:
+        # Expanding mean of this stat within the specific location context
+        splits[f'{stat}_LOC_MEAN'] = df.groupby(['PLAYER_ID', 'IS_HOME'])[stat].transform(
+            lambda x: x.shift(1).expanding(min_periods=1).mean()
+        )
+        season_col = f'{stat}_Season'
+        if season_col in df.columns:
+             splits[f'{stat}_LOC_MEAN'] = splits[f'{stat}_LOC_MEAN'].fillna(df[season_col])
+             
+    df = pd.concat([df, pd.DataFrame(splits, index=df.index)], axis=1)
     return df
 
 
@@ -645,7 +698,9 @@ def main():
     df = df.sort_values(['PLAYER_ID', 'GAME_DATE'])
 
     print("\n--- STAGE 3: HISTORICAL FEATURES ---")
+    print("\n--- STAGE 3: HISTORICAL FEATURES ---")
     df = add_rolling_features(df)
+    df = add_home_away_performance(df)
 
     print("\n--- STAGE 4: ADVANCED FEATURES ---")
     df = add_role_features(df)
