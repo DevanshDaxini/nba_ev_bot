@@ -644,8 +644,8 @@ def scan_all(df_history, models, is_tomorrow=False, max_days_forward=7):
             return 99
         deduped_bets.sort(key=lambda x: (_tier_key(x), -abs(x['PCT_EDGE'])))
         
-        # Take top 10 with market diversity — ensure every stat type is covered
-        def _diverse_top(bets, n=10):
+        # Take top 20 with market diversity — ensure every stat type is covered
+        def _diverse_top(bets, n=20):
             """Pick best bet per market first, then fill to n."""
             if len(bets) <= n:
                 return bets[:n]

@@ -313,10 +313,10 @@ def run_correlated_scanner():
         final_df['Tier'] = final_df['Tier'].replace({'?': '–', '~': '–'})
 
         # ── Main table: overall top 20 ─────────────────────────────────────
-        print_table(final_df, "TOP 20 CORRELATED PLAYS  --  Math + AI Confidence", limit=20)
+        print_table(final_df, "TOP 20 CORRELATED PLAYS  --  Math + AI Confidence", limit=30)
 
         # ── Bonus sections: best play(s) for every market NOT in the top 20 ─
-        top20_stats = set(final_df.head(20)['Stat'].unique())
+        top20_stats = set(final_df.head(30)['Stat'].unique())
         all_stats   = set(final_df['Stat'].unique())
         missing_stats = all_stats - top20_stats
 
@@ -392,7 +392,7 @@ def run_odds_scanner():
             if 'Line_Diff' in sorted_bets.columns:
                 display_cols.append('Line_Diff')
             display_cols.append('Implied_Win_%')
-            print(sorted_bets[display_cols].head(15).to_string(index=False))
+            print(sorted_bets[display_cols].head(20).to_string(index=False))
 
             os.makedirs(OUTPUT_DIR, exist_ok=True)
             for game_date in sorted_bets['Date'].unique():
