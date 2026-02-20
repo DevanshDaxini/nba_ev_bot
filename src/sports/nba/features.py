@@ -161,34 +161,91 @@ def add_defense_vs_position(df):
 
 
 def add_usage_vacuum_features(df):
-    print("...Calculating Usage Vacuum")
+    print("...Calculating Usage Vacuum (Lagged)")
     df = df.copy()
-    usage_col = 'USAGE_RATE_Season' if 'USAGE_RATE_Season' in df.columns else 'USAGE_RATE'
-    stars = df[df[usage_col] > 28][['PLAYER_ID', 'GAME_ID', 'TEAM_ID']].copy()
+    
+    # CRITICAL FIX: Strip any duplicated columns created by prior pipeline merges
+    # (e.g., getting multiple 'USAGE_RATE_Season' columns prevents vector math)
+    df = df.loc[:, ~df.columns.duplicated()].copy()
+    
+    # 0. Wipe duplicated incoming indices from prior Pipeline stages
+    df = df.reset_index(drop=True)
+    
+    # CRITICAL: We must determine who a "star" is based ONLY on their usage rate *prior* to the current game.
+    # Otherwise, they naturally record high usage in the current game, get labeled a star, and the model leaks.
+    df = df.sort_values(by=['PLAYER_ID', 'GAME_DATE'])
+    df['USAGE_RATE_Season_Lagged'] = df.groupby('PLAYER_ID')['USAGE_RATE'].transform(lambda x: x.shift(1).expanding().mean())
+    df['USAGE_RATE_Season_Lagged'] = df['USAGE_RATE_Season_Lagged'].fillna(df['USAGE_RATE']) # Fallback for game 1
+
+    stars_mask = df['USAGE_RATE_Season_Lagged'] > 28
+    stars = df[stars_mask][['PLAYER_ID', 'GAME_ID', 'TEAM_ID']].copy()
     star_games = stars.groupby(['GAME_ID', 'TEAM_ID'])['PLAYER_ID'].count().reset_index()
     star_games.columns = ['GAME_ID', 'TEAM_ID', 'STAR_COUNT']
     df = df.merge(star_games, on=['GAME_ID', 'TEAM_ID'], how='left')
     df['STAR_COUNT'] = df['STAR_COUNT'].fillna(0)
-    team_avg_stars = df.groupby('TEAM_ID')['STAR_COUNT'].transform('mean')
-    df['USAGE_VACUUM'] = (team_avg_stars - df['STAR_COUNT']).clip(lower=0)
+    
+    # Chronological team average
+    df = df.sort_values(by=['TEAM_ID', 'GAME_DATE'])
+    # Transform will try to align on index, so we reset_index to apply the shift sequentially
+    # Then we restore the original index to insert back into dataframe
+    sorted_idx = df.index
+    df = df.reset_index(drop=True)
+    df['TEAM_AVG_STARS'] = df.groupby('TEAM_ID')['STAR_COUNT'].transform(lambda x: x.shift(1).expanding().mean())
+    df.index = sorted_idx
+    df.sort_index(inplace=True)
+    
+    df['USAGE_VACUUM'] = (df['TEAM_AVG_STARS'] - df['STAR_COUNT']).fillna(0).clip(lower=0)
+    df.drop(columns=['TEAM_AVG_STARS'], inplace=True)
+    
     return df
 
 
 def add_missing_player_context(df):
-    print("...Calculating Missing Player Impact (Injury Simulation)")
+    print("...Calculating Missing Player Impact (Chronological)")
     df = df.copy()
-    season_stats = df.groupby(['SEASON_ID', 'TEAM_ID', 'PLAYER_ID'])['USAGE_RATE'].mean().reset_index()
-    key_players  = season_stats[season_stats['USAGE_RATE'] > 18.0]
-    team_games   = df[['SEASON_ID', 'TEAM_ID', 'GAME_ID']].drop_duplicates()
-    expected     = team_games.merge(key_players, on=['SEASON_ID', 'TEAM_ID'], how='left')
-    actual       = df[['GAME_ID', 'PLAYER_ID']].drop_duplicates()
-    actual['PLAYED'] = True
-    merged  = expected.merge(actual, on=['GAME_ID', 'PLAYER_ID'], how='left')
-    missing = merged[merged['PLAYED'].isna()]
-    missing_usage = missing.groupby(['GAME_ID', 'TEAM_ID'])['USAGE_RATE'].sum().reset_index()
-    missing_usage.rename(columns={'USAGE_RATE': 'MISSING_USAGE'}, inplace=True)
+    
+    df = df.sort_values(by=['PLAYER_ID', 'GAME_DATE'])
+    df['USAGE_RATE_Season_Lagged'] = df.groupby('PLAYER_ID')['USAGE_RATE'].transform(lambda x: x.shift(1).expanding().mean())
+    df['USAGE_RATE_Season_Lagged'] = df['USAGE_RATE_Season_Lagged'].fillna(df['USAGE_RATE'])
+        
+    # 2. Extract a baseline of "Key Players" (Usage > 18%) using their lagged chronological math
+    season_baselines = df.groupby(['SEASON_ID', 'TEAM_ID', 'PLAYER_ID'])['USAGE_RATE_Season_Lagged'].mean().reset_index()
+    key_players = season_baselines[season_baselines['USAGE_RATE_Season_Lagged'] > 18.0][['SEASON_ID', 'TEAM_ID', 'PLAYER_ID']].copy()
+    
+    # 3. Create a master log of every game a team played
+    team_games = df[['SEASON_ID', 'TEAM_ID', 'GAME_ID']].drop_duplicates()
+    
+    # 4. Map expected key players to all their team's games
+    expected = team_games.merge(key_players, on=['SEASON_ID', 'TEAM_ID'], how='left')
+    expected = expected.dropna(subset=['PLAYER_ID'])
+    
+    # 5. Figure out who actually played in each game
+    actual = df[['GAME_ID', 'PLAYER_ID']].drop_duplicates()
+    actual['PLAYED'] = 1
+    
+    # 6. Find the players who were expected but didn't play
+    merged = expected.merge(actual, on=['GAME_ID', 'PLAYER_ID'], how='left')
+    missing_players = merged[merged['PLAYED'].isna()].copy()
+    
+    # 7. For missing players, lookup what their last known chronological usage rate was BEFORE that game
+    # To do this safely, we take their latest available USAGE_RATE_Season_Lagged from the main df
+    player_latest_usage = df.dropna(subset=['USAGE_RATE_Season_Lagged']).sort_values('GAME_DATE').groupby('PLAYER_ID').tail(1)[['PLAYER_ID', 'USAGE_RATE_Season_Lagged']]
+    
+    # Merge their usage in
+    missing_players = missing_players.merge(player_latest_usage, on='PLAYER_ID', how='left')
+    missing_players['USAGE_RATE_Season_Lagged'] = missing_players['USAGE_RATE_Season_Lagged'].fillna(20.0) # Assume 20 if rookie/no data
+    
+    # 8. Sum up the missing usage per game
+    missing_usage = missing_players.groupby(['GAME_ID', 'TEAM_ID'])['USAGE_RATE_Season_Lagged'].sum().reset_index()
+    missing_usage.rename(columns={'USAGE_RATE_Season_Lagged': 'MISSING_USAGE'}, inplace=True)
+    
+    # 9. Merge back perfectly
+    sorted_idx = df.index
+    df = df.reset_index(drop=True)
     df = df.merge(missing_usage, on=['GAME_ID', 'TEAM_ID'], how='left')
     df['MISSING_USAGE'] = df['MISSING_USAGE'].fillna(0)
+    df.index = sorted_idx
+    
     return df
 
 
