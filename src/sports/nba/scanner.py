@@ -533,7 +533,7 @@ def scan_all(df_history, models, is_tomorrow=False, max_days_forward=7):
                 if not features_ok: break
                 try:
                     # Filter for features actually used by THIS model
-                    model_features = [f for f in model.feature_names_in_ if target not in f]
+                    model_features = [f for f in model.feature_names_in_]
                     valid_input = input_row.reindex(columns=model_features, fill_value=0)
                     proj = float(model.predict(valid_input)[0])
                     player_predictions[target] = proj
@@ -1051,7 +1051,7 @@ def scout_player(df_history, models):
         for target in TARGETS:
             if target in models:
                 tier_emoji    = MODEL_QUALITY.get(target, {}).get('emoji', '?')
-                model_features = [f for f in models[target].feature_names_in_ if target not in f]
+                model_features = [f for f in models[target].feature_names_in_]
                 valid_input   = input_row.reindex(columns=model_features, fill_value=0)
                 base_pred     = float(models[target].predict(valid_input)[0])
                 adj           = inj_adj.get(target, 0)
