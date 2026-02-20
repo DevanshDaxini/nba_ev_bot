@@ -18,6 +18,8 @@ import matplotlib.ticker as mtick
 import xgboost as xgb
 import os
 
+from src.sports.nba.config import ACTIVE_TARGETS
+
 # Resolve paths relative to the project root (two levels up from this file)
 # src/core/visualizer.py -> src/ -> project root
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -61,25 +63,34 @@ def plot_individual_model_accuracy():
     print(f"✅ Saved: {save_path}")
 
 
-def plot_feature_importance():
-    model_path = os.path.join(NBA_MODELS_DIR, 'PTS_model.json')
+def plot_feature_importance(target='PTS'):
+    model_path = os.path.join(NBA_MODELS_DIR, f'{target}_model.json')
     if not os.path.exists(model_path):
         print(f"❌ Error: Could not find {model_path}")
         return
 
     model = xgb.XGBRegressor()
     model.load_model(model_path)
-    importance = model.get_booster().get_score(importance_type='weight')
-    importance = pd.Series(importance).sort_values(ascending=True)
+    try:
+        importance = model.get_booster().get_score(importance_type='weight')
+        if not importance:
+            return
+        importance = pd.Series(importance).sort_values(ascending=True)
+        # Take the top 30 most important features for readability
+        importance = importance.tail(30)
+    except Exception as e:
+        print(f"Warning: Could not extract importance for {target}: {e}")
+        return
 
     plt.figure(figsize=(10, 8))
     importance.plot(kind='barh', color='skyblue')
-    plt.title('Feature Importance: What is the Model Weighting?')
+    plt.title(f'Feature Importance: {target} Model')
     plt.xlabel('Weight (F-Score)')
     plt.tight_layout()
 
-    save_path = os.path.join(NBA_OUTPUT_DIR, 'feature_importance.png')
+    save_path = os.path.join(NBA_OUTPUT_DIR, f'{target}_feature_importance.png')
     plt.savefig(save_path)
+    plt.close()
     print(f"✅ Saved: {save_path}")
 
 
@@ -117,6 +128,7 @@ def plot_win_rate():
 if __name__ == "__main__":
     print("📊 Generating Visualizations...")
     plot_individual_model_accuracy()
-    plot_feature_importance()
+    for target in ACTIVE_TARGETS:
+        plot_feature_importance(target)
     plot_win_rate()
     print(f"🚀 Done! Check '{NBA_OUTPUT_DIR}' for your plots.")
